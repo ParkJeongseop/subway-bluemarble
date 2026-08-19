@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet, useWindowDimensions, FlatList,
-  AppState,
+  AppState, Animated, Easing,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import {
@@ -88,6 +88,10 @@ function Board({ session }) {
   const [pendingUse, setPendingUse] = useState(null); // 대상팀 선택 대기 중인 아이템 id
   const [hqMsg, setHqMsg] = useState('');
   const [quizIdx, setQuizIdx] = useState(null); // 출제 중인 퀴즈 index
+  // 주사위 애니메이션: lastRoll이 생기면 숫자 돌리다가 결과에 멈춤
+  const [diceFace, setDiceFace] = useState(null); // 표시 중인 눈 (null = 숨김)
+  const diceScale = useRef(new Animated.Value(0)).current;
+  const prevRoll = useRef(null);
 
   const gameId = session.gameId;
   const log = (type, teamId, message) =>
@@ -114,6 +118,36 @@ function Board({ session }) {
 
   const canControl = session.role !== 'player';
   const myTeam = session.teamId && teams[session.teamId];
+
+  // 주사위 연출: lastRoll이 새로 생기면 눈이 돌아가다 결과에 멈춤 (참가자 화면도 동일 재생)
+  const lastRoll = myTeam ? myTeam.lastRoll : null;
+  useEffect(() => {
+    if (!lastRoll) { prevRoll.current = null; return undefined; }
+    if (lastRoll === prevRoll.current) return undefined;
+    prevRoll.current = lastRoll;
+    setDiceFace(1);
+    diceScale.setValue(0);
+    Animated.spring(diceScale, { toValue: 1, friction: 4, useNativeDriver: true }).start();
+    let i = 0;
+    const iv = setInterval(() => {
+      i += 1;
+      if (i < 12) {
+        setDiceFace(1 + Math.floor(Math.random() * 6)); // 두구두구
+      } else {
+        clearInterval(iv);
+        setDiceFace(lastRoll); // 결과 (더블/트리플이면 합계)
+        Animated.sequence([
+          Animated.timing(diceScale, { toValue: 1.35, duration: 120, useNativeDriver: true }),
+          Animated.spring(diceScale, { toValue: 1, friction: 3, useNativeDriver: true }),
+        ]).start();
+        setTimeout(() => {
+          Animated.timing(diceScale, { toValue: 0, duration: 200, useNativeDriver: true })
+            .start(() => setDiceFace(null));
+        }, 1600);
+      }
+    }, 80);
+    return () => clearInterval(iv);
+  }, [lastRoll]);
   const teamRef = () => doc(teamsCol(gameId), session.teamId);
 
   const move = async (delta) => {
@@ -319,6 +353,14 @@ function Board({ session }) {
           <Text style={st.boardLogo}>2호선{'\n'}브루마블</Text>
           <Text style={st.boardLogoSub}>홍대입구 → 강남</Text>
         </View>
+        {/* 주사위 연출 오버레이 */}
+        {diceFace !== null && (
+          <View style={st.diceLayer} pointerEvents="none">
+            <Animated.View style={[st.dice, { transform: [{ scale: diceScale }] }]}>
+              <Text style={st.diceNum}>{diceFace}</Text>
+            </Animated.View>
+          </View>
+        )}
         {STATIONS.map((s) => {
           const special = s.index === 0 || s.index === FINISH;
           return (
@@ -584,6 +626,18 @@ const st = StyleSheet.create({
     lineHeight: 32, opacity: 0.9,
   },
   boardLogoSub: { color: C.subText, fontSize: 11, marginTop: 4 },
+  diceLayer: {
+    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+    justifyContent: 'center', alignItems: 'center', zIndex: 10,
+  },
+  dice: {
+    width: 88, height: 88, borderRadius: 20, backgroundColor: '#fff',
+    justifyContent: 'center', alignItems: 'center',
+    borderBottomWidth: 5, borderBottomColor: '#c9c4b4',
+    elevation: 8, shadowColor: '#000', shadowOpacity: 0.5, shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
+  },
+  diceNum: { color: '#1d2b22', fontSize: 44, fontWeight: '900' },
   station: {
     position: 'absolute', width: 42, height: 32, borderRadius: 6,
     justifyContent: 'center', alignItems: 'center', paddingHorizontal: 2,
