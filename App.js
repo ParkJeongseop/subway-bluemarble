@@ -313,14 +313,27 @@ function Board({ session }) {
 
       {/* 보드: 역 칸 + 팀 말 */}
       <View style={{ width: boardSize, height: boardSize }}>
-        {STATIONS.map((s) => (
-          <View key={s.index} style={[st.station, {
-            left: s.x * boardSize - 21, top: s.y * boardSize - 15,
-            backgroundColor: s.index === 0 ? '#2ecc71' : s.index === FINISH ? '#e67e22' : '#1e2b3a',
-          }]}>
-            <Text style={st.stationText} numberOfLines={1}>{s.name}</Text>
-          </View>
-        ))}
+        {/* 중앙 로고 */}
+        <View style={st.boardCenter} pointerEvents="none">
+          <Text style={st.boardLogoIcon}>🚇</Text>
+          <Text style={st.boardLogo}>2호선{'\n'}브루마블</Text>
+          <Text style={st.boardLogoSub}>홍대입구 → 강남</Text>
+        </View>
+        {STATIONS.map((s) => {
+          const special = s.index === 0 || s.index === FINISH;
+          return (
+            <View key={s.index} style={[
+              st.station,
+              { left: s.x * boardSize - 21, top: s.y * boardSize - 15 },
+              s.index === 0 && st.stationStart,
+              s.index === FINISH && st.stationFinish,
+            ]}>
+              <Text style={[st.stationText, special && st.stationTextSpecial]} numberOfLines={2}>
+                {s.index === 0 ? 'START\n홍대입구' : s.index === FINISH ? '🏁 강남\nFINISH' : s.name}
+              </Text>
+            </View>
+          );
+        })}
         {Object.entries(teams).map(([id, t], i) => {
           const s = STATIONS[t.position] || STATIONS[0];
           return (
@@ -531,27 +544,61 @@ function Board({ session }) {
   );
 }
 
+// 팔레트: 다크그린 펠트 보드 + 아이보리 타일 (컨셉 이미지 기반)
+const C = {
+  bg: '#0b1a12',        // 배경 (짙은 그린)
+  panel: '#12271b',     // 카드/패널
+  panelBorder: '#1f4630',
+  tile: '#ece8da',      // 역 타일 (아이보리)
+  tileText: '#22301f',
+  green: '#27ae60',     // 주요 버튼/START
+  greenBright: '#2ecc71',
+  orange: '#e67e22',    // FINISH/순위
+  gold: '#f4c542',      // 코인
+  text: '#eef5ee',
+  subText: '#8fb89e',
+  btn: '#1d3b2a',       // 보조 버튼
+};
+
 const st = StyleSheet.create({
-  root: { flex: 1, backgroundColor: '#0d1620', paddingTop: 50 },
-  entry: { flex: 1, backgroundColor: '#0d1620', justifyContent: 'center', padding: 32 },
+  root: { flex: 1, backgroundColor: C.bg, paddingTop: 50 },
+  entry: { flex: 1, backgroundColor: C.bg, justifyContent: 'center', padding: 32 },
   header: { paddingHorizontal: 16, paddingBottom: 8 },
-  title: { color: '#fff', fontSize: 24, fontWeight: 'bold' },
-  sub: { color: '#8fa8bf', fontSize: 14, marginTop: 2 },
+  title: { color: C.text, fontSize: 24, fontWeight: 'bold' },
+  sub: { color: C.subText, fontSize: 14, marginTop: 2 },
   input: {
-    backgroundColor: '#1e2b3a', color: '#fff', borderRadius: 10, padding: 14,
-    fontSize: 18, marginTop: 24, textAlign: 'center',
+    backgroundColor: C.panel, color: C.text, borderRadius: 10, padding: 14,
+    fontSize: 18, marginTop: 14, textAlign: 'center',
+    borderWidth: 1, borderColor: C.panelBorder,
   },
   err: { color: '#e74c3c', marginTop: 8, textAlign: 'center' },
-  btn: { backgroundColor: '#2ecc71', borderRadius: 10, padding: 14, marginTop: 12 },
+  btn: { backgroundColor: C.green, borderRadius: 10, padding: 14, marginTop: 12 },
   btnText: { color: '#fff', fontWeight: 'bold', textAlign: 'center', fontSize: 16 },
-  station: {
-    position: 'absolute', width: 42, height: 30, borderRadius: 6,
-    justifyContent: 'center', alignItems: 'center', paddingHorizontal: 2,
+  boardCenter: {
+    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+    justifyContent: 'center', alignItems: 'center',
   },
-  stationText: { color: '#cfe3f5', fontSize: 8 },
+  boardLogoIcon: { fontSize: 30 },
+  boardLogo: {
+    color: C.text, fontSize: 26, fontWeight: '900', textAlign: 'center',
+    lineHeight: 32, opacity: 0.9,
+  },
+  boardLogoSub: { color: C.subText, fontSize: 11, marginTop: 4 },
+  station: {
+    position: 'absolute', width: 42, height: 32, borderRadius: 6,
+    justifyContent: 'center', alignItems: 'center', paddingHorizontal: 2,
+    backgroundColor: C.tile,
+    borderBottomWidth: 3, borderBottomColor: '#b9b4a3', // 타일 입체감
+  },
+  stationStart: { backgroundColor: C.green, borderBottomColor: '#1d8a4a' },
+  stationFinish: { backgroundColor: C.orange, borderBottomColor: '#b35f12' },
+  stationText: { color: C.tileText, fontSize: 8, fontWeight: '700', textAlign: 'center' },
+  stationTextSpecial: { color: '#fff', fontSize: 8, fontWeight: '900' },
   pin: {
     position: 'absolute', width: 18, height: 18, borderRadius: 9,
-    justifyContent: 'center', alignItems: 'center', borderWidth: 1.5, borderColor: '#fff',
+    justifyContent: 'center', alignItems: 'center', borderWidth: 2, borderColor: '#fff',
+    elevation: 4, shadowColor: '#000', shadowOpacity: 0.5, shadowRadius: 3,
+    shadowOffset: { width: 0, height: 2 },
   },
   pinText: { color: '#fff', fontSize: 9, fontWeight: 'bold' },
   controls: {
@@ -559,41 +606,48 @@ const st = StyleSheet.create({
     paddingHorizontal: 16, paddingVertical: 8,
   },
   row: { flexDirection: 'row', gap: 8, marginTop: 8 },
-  ctrlBtn: { backgroundColor: '#2c3e50', borderRadius: 8, padding: 12 },
-  ok: { backgroundColor: '#27ae60' },
+  ctrlBtn: {
+    backgroundColor: C.btn, borderRadius: 8, padding: 12,
+    borderWidth: 1, borderColor: C.panelBorder,
+  },
+  ok: { backgroundColor: C.green, borderColor: C.green },
   disabled: { opacity: 0.35 },
-  pos: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
-  coin: { color: '#f1c40f', fontSize: 15, fontWeight: 'bold' },
+  pos: { color: C.text, fontSize: 16, fontWeight: 'bold' },
+  coin: { color: C.gold, fontSize: 15, fontWeight: 'bold' },
   statusRow: {
     flexDirection: 'row', gap: 16, alignItems: 'center',
     paddingHorizontal: 16, paddingTop: 4,
   },
   missionCard: {
-    backgroundColor: '#1e2b3a', borderRadius: 10, padding: 12,
+    backgroundColor: C.panel, borderRadius: 12, padding: 12,
     marginHorizontal: 16, marginTop: 8,
+    borderWidth: 1, borderColor: C.panelBorder,
   },
-  missionLabel: { color: '#8fa8bf', fontSize: 12, marginBottom: 4 },
-  missionText: { color: '#fff', fontSize: 15, fontWeight: 'bold' },
+  missionLabel: { color: C.subText, fontSize: 12, marginBottom: 4 },
+  missionText: { color: C.text, fontSize: 15, fontWeight: 'bold' },
   invRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, paddingHorizontal: 16, paddingTop: 6 },
   invChip: { backgroundColor: '#8e44ad', borderRadius: 14, paddingVertical: 5, paddingHorizontal: 10 },
   invChipText: { color: '#fff', fontSize: 12, fontWeight: 'bold' },
   shopRow: {
     flexDirection: 'row', alignItems: 'center', gap: 8,
-    borderTopWidth: 1, borderTopColor: '#2c3e50', paddingVertical: 8,
+    borderTopWidth: 1, borderTopColor: C.panelBorder, paddingVertical: 8,
   },
-  shopDesc: { color: '#8fa8bf', fontSize: 12, marginTop: 2 },
+  shopDesc: { color: C.subText, fontSize: 12, marginTop: 2 },
   log: { flex: 1, marginTop: 8, paddingHorizontal: 16 },
-  logLine: { color: '#cfe3f5', fontSize: 13, paddingVertical: 3 },
-  broadcastLine: { color: '#f1c40f', fontWeight: 'bold' },
+  logLine: { color: '#cfe6d4', fontSize: 13, paddingVertical: 3 },
+  broadcastLine: { color: C.gold, fontWeight: 'bold' },
   rankRow: {
-    backgroundColor: '#e67e22', borderRadius: 8, marginHorizontal: 16,
+    backgroundColor: C.orange, borderRadius: 8, marginHorizontal: 16,
     marginTop: 6, padding: 8,
   },
   rankText: { color: '#fff', fontWeight: 'bold', fontSize: 14, textAlign: 'center' },
-  quizAnswer: { color: '#2ecc71', fontSize: 13, marginTop: 4 },
+  quizAnswer: { color: C.greenBright, fontSize: 13, marginTop: 4 },
   hqInput: {
-    flex: 1, backgroundColor: '#0d1620', color: '#fff', borderRadius: 8,
-    padding: 10, fontSize: 14,
+    flex: 1, backgroundColor: C.bg, color: C.text, borderRadius: 8,
+    padding: 10, fontSize: 14, borderWidth: 1, borderColor: C.panelBorder,
   },
-  miniBtn: { backgroundColor: '#2c3e50', borderRadius: 6, padding: 8 },
+  miniBtn: {
+    backgroundColor: C.btn, borderRadius: 6, padding: 8,
+    borderWidth: 1, borderColor: C.panelBorder,
+  },
 });
