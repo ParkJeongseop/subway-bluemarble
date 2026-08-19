@@ -13,6 +13,4 @@ const firebaseConfig = {
 
 const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app);
-
-// 이벤트 1회 = 게임 1개. 당일 게임 ID
-export const GAME_ID = 'demo';
+// 이벤트 1회 = 방 1개 (games/{방코드}/...). 방 코드는 입장 화면에서 입력.

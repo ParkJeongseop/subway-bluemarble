@@ -8,15 +8,15 @@ import {
   collection, doc, onSnapshot, setDoc, getDoc, updateDoc, addDoc, serverTimestamp,
   query, orderBy, limit,
 } from 'firebase/firestore';
-import { db, GAME_ID } from './src/firebase';
+import { db } from './src/firebase';
 import { STATIONS, FINISH, TEAM_COLORS } from './src/stations';
 import { RANDOM_MISSIONS, STATION_MISSIONS } from './src/missions';
 import { ITEMS, itemById, IS_ATTACK } from './src/items';
 import { registerPush, sendPush, applyUpdateIfAny } from './src/push';
 import { QUIZZES } from './src/quiz';
 
-const teamsCol = collection(db, 'games', GAME_ID, 'teams');
-const logCol = collection(db, 'games', GAME_ID, 'log');
+const teamsCol = (gameId) => collection(db, 'games', gameId, 'teams');
+const logCol = (gameId) => collection(db, 'games', gameId, 'log');
 
 // 입장 코드: T1~T5 참가자, S1~S5 스태프(해당 팀 조작 가능), HQ 본부
 function parseCode(code) {
@@ -27,10 +27,6 @@ function parseCode(code) {
   return { role: m[1] === 'S' ? 'staff' : 'player', teamId: m[2] };
 }
 
-async function log(type, teamId, message) {
-  await addDoc(logCol, { type, teamId, message, createdAt: serverTimestamp() });
-}
-
 export default function App() {
   const [session, setSession] = useState(null); // { role, teamId }
   return session
@@ -39,14 +35,17 @@ export default function App() {
 }
 
 function Entry({ onJoin }) {
+  const [room, setRoom] = useState('');
   const [code, setCode] = useState('');
   const [err, setErr] = useState('');
   const join = async () => {
+    const gameId = room.trim().toUpperCase();
+    if (!gameId) { setErr('방 코드를 입력하세요'); return; }
     const s = parseCode(code);
     if (!s) { setErr('코드 형식: T1~T5 / S1~S5 / HQ'); return; }
     if (s.teamId) {
       // 팀 문서가 없을 때만 생성 — merge로 덮으면 재입장 시 위치가 리셋됨
-      const ref = doc(teamsCol, s.teamId);
+      const ref = doc(teamsCol(gameId), s.teamId);
       if (!(await getDoc(ref)).exists()) {
         await setDoc(ref, {
           name: `${s.teamId}팀`, position: 0, coins: 0, items: [], shield: false,
@@ -54,14 +53,19 @@ function Entry({ onJoin }) {
         });
       }
     }
-    registerPush(s.teamId, s.role); // 네이티브에서만 동작, 실패해도 게임 진행엔 무관
-    onJoin(s);
+    registerPush(gameId, s.teamId, s.role); // 네이티브에서만 동작, 실패해도 게임 진행엔 무관
+    onJoin({ ...s, gameId });
   };
   return (
     <View style={st.entry}>
       <StatusBar style="light" />
       <Text style={st.title}>2호선 브루마블</Text>
       <Text style={st.sub}>홍대입구 → 강남</Text>
+      <TextInput
+        style={st.input} value={room} onChangeText={setRoom}
+        placeholder="방 코드 (예: 0906)" placeholderTextColor="#567"
+        autoCapitalize="characters"
+      />
       <TextInput
         style={st.input} value={code} onChangeText={setCode}
         placeholder="입장 코드 (T1, S3, HQ...)" placeholderTextColor="#567"
@@ -85,16 +89,20 @@ function Board({ session }) {
   const [hqMsg, setHqMsg] = useState('');
   const [quizIdx, setQuizIdx] = useState(null); // 출제 중인 퀴즈 index
 
+  const gameId = session.gameId;
+  const log = (type, teamId, message) =>
+    addDoc(logCol(gameId), { type, teamId, message, createdAt: serverTimestamp() });
+
   useEffect(() => {
-    const u1 = onSnapshot(teamsCol, (snap) => {
+    const u1 = onSnapshot(teamsCol(gameId), (snap) => {
       const t = {};
       snap.forEach((d) => { t[d.id] = d.data(); });
       setTeams(t);
     });
-    const u2 = onSnapshot(query(logCol, orderBy('createdAt', 'desc'), limit(20)),
+    const u2 = onSnapshot(query(logCol(gameId), orderBy('createdAt', 'desc'), limit(20)),
       (snap) => setLogs(snap.docs.map((d) => ({ id: d.id, ...d.data() }))));
     return () => { u1(); u2(); };
-  }, []);
+  }, [gameId]);
 
   // 포그라운드 복귀 시 OTA 업데이트 즉시 적용
   useEffect(() => {
@@ -106,7 +114,7 @@ function Board({ session }) {
 
   const canControl = session.role !== 'player';
   const myTeam = session.teamId && teams[session.teamId];
-  const teamRef = () => doc(teamsCol, session.teamId);
+  const teamRef = () => doc(teamsCol(gameId), session.teamId);
 
   const move = async (delta) => {
     const t = teams[session.teamId];
@@ -155,8 +163,8 @@ function Board({ session }) {
     });
     await log('move', session.teamId,
       `${t.name} → ${station} 도착${finished ? ' 🏁 골인!' : ''}${mission ? ` / 미션: ${mission}` : ''}`);
-    if (finished) sendPush('all', '🏁 골인!', `${t.name}이 강남역에 도착했습니다!`);
-    else if (mission) sendPush(session.teamId, `📋 ${station} 미션`, mission);
+    if (finished) sendPush(gameId, 'all', '🏁 골인!', `${t.name}이 강남역에 도착했습니다!`);
+    else if (mission) sendPush(gameId, session.teamId, `📋 ${station} 미션`, mission);
   };
 
   const judgeMission = async (success) => {
@@ -207,14 +215,14 @@ function Board({ session }) {
     if (idx < 0) return;
     mine.splice(idx, 1);
     const target = targetId ? teams[targetId] : null;
-    const tRef = targetId ? doc(teamsCol, targetId) : null;
+    const tRef = targetId ? doc(teamsCol(gameId), targetId) : null;
 
     // 천사카드 자동 방어
     if (target && IS_ATTACK.has(itemId) && target.shield) {
       await updateDoc(tRef, { shield: false });
       await updateDoc(teamRef(), { items: mine });
       await log('attack', session.teamId, `${t.name} → ${target.name} ${item.name}! → 🛡️ 천사카드 방어됨`);
-      sendPush(targetId, '🛡️ 공격 방어!', `${t.name}의 ${item.name}을(를) 천사카드가 막았습니다`);
+      sendPush(gameId, targetId, '🛡️ 공격 방어!', `${t.name}의 ${item.name}을(를) 천사카드가 막았습니다`);
       return;
     }
 
@@ -244,7 +252,7 @@ function Board({ session }) {
     await updateDoc(teamRef(), myUpdate);
     await log(target ? 'attack' : 'item', session.teamId,
       `${t.name}${target ? ` → ${target.name}` : ''} ${item.name} 사용! ${item.desc}`);
-    if (target) sendPush(targetId, '⚔️ 공격 받음!', `${t.name}: ${item.name} — ${item.desc}`);
+    if (target) sendPush(gameId, targetId, '⚔️ 공격 받음!', `${t.name}: ${item.name} — ${item.desc}`);
   };
 
   // ── 코인 퀴즈 (스태프 출제) ──
@@ -281,14 +289,14 @@ function Board({ session }) {
     if (!msg) return;
     setHqMsg('');
     await log('broadcast', 'HQ', `📢 ${msg}`);
-    sendPush('all', '📢 본부 방송', msg);
+    sendPush(gameId, 'all', '📢 본부 방송', msg);
   };
 
   const hqAdjust = async (teamId, field, delta) => {
     const t = teams[teamId];
     if (!t) return;
     const value = Math.max(0, Math.min(field === 'position' ? FINISH : 999, (t[field] || 0) + delta));
-    await updateDoc(doc(teamsCol, teamId), { [field]: value });
+    await updateDoc(doc(teamsCol(gameId), teamId), { [field]: value });
     await log('hq', teamId,
       `본부 조정: ${t.name} ${field === 'coins' ? `코인 ${value}` : `→ ${STATIONS[value].name}`}`);
   };
@@ -299,7 +307,7 @@ function Board({ session }) {
       <View style={st.header}>
         <Text style={st.title}>2호선 브루마블</Text>
         <Text style={st.sub}>
-          {session.role === 'hq' ? '본부' : `${session.teamId}팀 ${session.role === 'staff' ? '(스태프)' : ''}`}
+          방 {gameId} · {session.role === 'hq' ? '본부' : `${session.teamId}팀 ${session.role === 'staff' ? '(스태프)' : ''}`}
         </Text>
       </View>
 

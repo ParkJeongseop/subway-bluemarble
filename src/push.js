@@ -2,12 +2,12 @@
 // ponytail: 토큰이 Firestore에 공개돼 있어 악용 여지 있음 — 일반 배포 앱이면 Cloud Functions로 옮길 것
 import { Platform } from 'react-native';
 import { collection, doc, getDocs, setDoc } from 'firebase/firestore';
-import { db, GAME_ID } from './firebase';
+import { db } from './firebase';
 
-const tokensCol = collection(db, 'games', GAME_ID, 'tokens');
+const tokensCol = (gameId) => collection(db, 'games', gameId, 'tokens');
 
 // 앱 시작 시 호출 — 네이티브에서만 동작, 웹은 조용히 무시
-export async function registerPush(teamId, role) {
+export async function registerPush(gameId, teamId, role) {
   if (Platform.OS === 'web') return;
   try {
     const Notifications = await import('expo-notifications');
@@ -28,16 +28,16 @@ export async function registerPush(teamId, role) {
     }
     const { data: token } = await Notifications.getExpoPushTokenAsync();
     // 토큰을 문서 ID로 쓰면 중복 등록이 자연히 merge됨
-    await setDoc(doc(tokensCol, token.replace(/[/\\]/g, '_')), { token, teamId, role });
+    await setDoc(doc(tokensCol(gameId), token.replace(/[/\\]/g, '_')), { token, teamId, role });
   } catch (e) {
     console.log('push register skipped:', e.message);
   }
 }
 
 // teamId: 'all'이면 전체 발송
-export async function sendPush(teamId, title, body) {
+export async function sendPush(gameId, teamId, title, body) {
   try {
-    const snap = await getDocs(tokensCol);
+    const snap = await getDocs(tokensCol(gameId));
     const targets = [];
     snap.forEach((d) => {
       const t = d.data();
