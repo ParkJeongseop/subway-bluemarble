@@ -7,9 +7,15 @@
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.parkjeongseop.subwaybluemarble",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
+      "package": "com.parkjeongseop.subwaybluemarble",
+      "googleServicesFile": "./google-services.json",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/android-icon-foreground.png",
@@ -19,6 +25,20 @@
     },
     "web": {
       "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "045dbf12-92fb-4de3-af1f-6033cc9a6d73"
+      }
+    },
+    "owner": "parkjeongseop",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/045dbf12-92fb-4de3-af1f-6033cc9a6d73",
+      "checkAutomatically": "ON_LOAD",
+      "fallbackToCacheTimeout": 15000
     }
   }
 }

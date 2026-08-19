@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "738381350860",
+    "project_id": "subway-bluemarble",
+    "storage_bucket": "subway-bluemarble.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:738381350860:android:1abd55e4d57c9b2b27ff69",
+        "android_client_info": {
+          "package_name": "com.parkjeongseop.subwaybluemarble"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC3nur9eLb3af6t0wD0G_kCTCKGFO1cGfw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

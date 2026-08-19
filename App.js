@@ -1,20 +1,591 @@
+import { useEffect, useState } from 'react';
+import {
+  View, Text, TextInput, TouchableOpacity, StyleSheet, useWindowDimensions, FlatList,
+  AppState,
+} from 'react-native';
 import { StatusBar } from 'expo-status-bar';
-import { StyleSheet, Text, View } from 'react-native';
+import {
+  collection, doc, onSnapshot, setDoc, getDoc, updateDoc, addDoc, serverTimestamp,
+  query, orderBy, limit,
+} from 'firebase/firestore';
+import { db, GAME_ID } from './src/firebase';
+import { STATIONS, FINISH, TEAM_COLORS } from './src/stations';
+import { RANDOM_MISSIONS, STATION_MISSIONS } from './src/missions';
+import { ITEMS, itemById, IS_ATTACK } from './src/items';
+import { registerPush, sendPush, applyUpdateIfAny } from './src/push';
+import { QUIZZES } from './src/quiz';
+
+const teamsCol = collection(db, 'games', GAME_ID, 'teams');
+const logCol = collection(db, 'games', GAME_ID, 'log');
+
+// 입장 코드: T1~T5 참가자, S1~S5 스태프(해당 팀 조작 가능), HQ 본부
+function parseCode(code) {
+  const c = code.trim().toUpperCase();
+  if (c === 'HQ') return { role: 'hq', teamId: null };
+  const m = c.match(/^([TS])([1-5])$/);
+  if (!m) return null;
+  return { role: m[1] === 'S' ? 'staff' : 'player', teamId: m[2] };
+}
+
+async function log(type, teamId, message) {
+  await addDoc(logCol, { type, teamId, message, createdAt: serverTimestamp() });
+}
 
 export default function App() {
+  const [session, setSession] = useState(null); // { role, teamId }
+  return session
+    ? <Board session={session} />
+    : <Entry onJoin={setSession} />;
+}
+
+function Entry({ onJoin }) {
+  const [code, setCode] = useState('');
+  const [err, setErr] = useState('');
+  const join = async () => {
+    const s = parseCode(code);
+    if (!s) { setErr('코드 형식: T1~T5 / S1~S5 / HQ'); return; }
+    if (s.teamId) {
+      // 팀 문서가 없을 때만 생성 — merge로 덮으면 재입장 시 위치가 리셋됨
+      const ref = doc(teamsCol, s.teamId);
+      if (!(await getDoc(ref)).exists()) {
+        await setDoc(ref, {
+          name: `${s.teamId}팀`, position: 0, coins: 0, items: [], shield: false,
+          doneMissions: [], inJail: false, finishedAt: null,
+        });
+      }
+    }
+    registerPush(s.teamId, s.role); // 네이티브에서만 동작, 실패해도 게임 진행엔 무관
+    onJoin(s);
+  };
   return (
-    <View style={styles.container}>
-      <Text>Open up App.js to start working on your app!</Text>
-      <StatusBar style="auto" />
+    <View style={st.entry}>
+      <StatusBar style="light" />
+      <Text style={st.title}>2호선 브루마블</Text>
+      <Text style={st.sub}>홍대입구 → 강남</Text>
+      <TextInput
+        style={st.input} value={code} onChangeText={setCode}
+        placeholder="입장 코드 (T1, S3, HQ...)" placeholderTextColor="#567"
+        autoCapitalize="characters" onSubmitEditing={join}
+      />
+      {!!err && <Text style={st.err}>{err}</Text>}
+      <TouchableOpacity style={st.btn} onPress={join}>
+        <Text style={st.btnText}>입장</Text>
+      </TouchableOpacity>
     </View>
   );
 }
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#fff',
-    alignItems: 'center',
-    justifyContent: 'center',
+function Board({ session }) {
+  const { width, height } = useWindowDimensions();
+  const boardSize = Math.min(width, height * 0.55); // 정사각 보드, 조작부·로그 공간 확보
+  const [teams, setTeams] = useState({});
+  const [logs, setLogs] = useState([]);
+  const [shopOpen, setShopOpen] = useState(false);
+  const [pendingUse, setPendingUse] = useState(null); // 대상팀 선택 대기 중인 아이템 id
+  const [hqMsg, setHqMsg] = useState('');
+  const [quizIdx, setQuizIdx] = useState(null); // 출제 중인 퀴즈 index
+
+  useEffect(() => {
+    const u1 = onSnapshot(teamsCol, (snap) => {
+      const t = {};
+      snap.forEach((d) => { t[d.id] = d.data(); });
+      setTeams(t);
+    });
+    const u2 = onSnapshot(query(logCol, orderBy('createdAt', 'desc'), limit(20)),
+      (snap) => setLogs(snap.docs.map((d) => ({ id: d.id, ...d.data() }))));
+    return () => { u1(); u2(); };
+  }, []);
+
+  // 포그라운드 복귀 시 OTA 업데이트 즉시 적용
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (s) => {
+      if (s === 'active') applyUpdateIfAny();
+    });
+    return () => sub.remove();
+  }, []);
+
+  const canControl = session.role !== 'player';
+  const myTeam = session.teamId && teams[session.teamId];
+  const teamRef = () => doc(teamsCol, session.teamId);
+
+  const move = async (delta) => {
+    const t = teams[session.teamId];
+    if (!t) return;
+    const pos = Math.max(0, Math.min(FINISH, t.position + delta));
+    await updateDoc(teamRef(), { position: pos });
+    await log('move', session.teamId,
+      `${t.name} → ${STATIONS[pos].name}${pos === FINISH ? ' 🏁 골인!' : ''}`);
+  };
+
+  // 미션 뽑기: 특정역 미션 우선, 아니면 랜덤풀에서 본인 팀이 안 한 것만
+  const drawMission = (t, stationName, exclude = []) => {
+    if (STATION_MISSIONS[stationName]) return STATION_MISSIONS[stationName];
+    const pool = RANDOM_MISSIONS.filter(
+      (m) => !(t.doneMissions || []).includes(m) && !exclude.includes(m),
+    );
+    if (pool.length === 0) return null; // 미션 다 소진 — 미션 없이 진행
+    return pool[Math.floor(Math.random() * pool.length)];
+  };
+
+  // 스태프가 조작하므로 클라 난수로 충분 (서버 주사위 불필요)
+  const roll = async () => {
+    const t = teams[session.teamId];
+    if (!t || t.lastRoll || t.pendingMission) return;
+    const diceCount = t.tripleNext ? 3 : t.doubleNext ? 2 : 1;
+    const max = t.cursed ? 3 : 6; // 저주: 눈 1~3
+    const rolls = Array.from({ length: diceCount }, () => 1 + Math.floor(Math.random() * max));
+    const value = rolls.reduce((a, b) => a + b, 0);
+    await updateDoc(teamRef(), {
+      lastRoll: value, cursed: false, doubleNext: false, tripleNext: false,
+    });
+    await log('roll', session.teamId,
+      `${t.name} 주사위 🎲 ${rolls.join('+')}${diceCount > 1 ? ` = ${value}` : ''}${t.cursed ? ' (저주 😈)' : ''}`);
+  };
+
+  const arrive = async () => {
+    const t = teams[session.teamId];
+    if (!t || !t.lastRoll) return;
+    const pos = Math.min(FINISH, t.position + t.lastRoll);
+    const station = STATIONS[pos].name;
+    const finished = pos === FINISH;
+    const mission = finished ? null : drawMission(t, station);
+    await updateDoc(teamRef(), {
+      position: pos, lastRoll: null, pendingMission: mission,
+      ...(finished && { finishedAt: serverTimestamp() }),
+    });
+    await log('move', session.teamId,
+      `${t.name} → ${station} 도착${finished ? ' 🏁 골인!' : ''}${mission ? ` / 미션: ${mission}` : ''}`);
+    if (finished) sendPush('all', '🏁 골인!', `${t.name}이 강남역에 도착했습니다!`);
+    else if (mission) sendPush(session.teamId, `📋 ${station} 미션`, mission);
+  };
+
+  const judgeMission = async (success) => {
+    const t = teams[session.teamId];
+    if (!t || !t.pendingMission) return;
+    if (success) {
+      await updateDoc(teamRef(), {
+        pendingMission: null,
+        doneMissions: [...(t.doneMissions || []), t.pendingMission],
+      });
+      await log('mission', session.teamId, `${t.name} 미션 성공 ✅`);
+    } else {
+      // 다시 뽑기: 현재 미션 제외 (특정역 미션은 재뽑기 없이 유지)
+      const redraw = drawMission(t, '', [t.pendingMission]);
+      await updateDoc(teamRef(), { pendingMission: redraw ?? t.pendingMission });
+      await log('mission', session.teamId, `${t.name} 미션 다시 뽑기 🔄`);
+    }
+  };
+
+  const addCoins = async (n) => {
+    const t = teams[session.teamId];
+    if (!t) return;
+    await updateDoc(teamRef(), { coins: Math.max(0, (t.coins || 0) + n) });
+    await log('coin', session.teamId, `${t.name} 코인 ${n > 0 ? '+' : ''}${n} (보유 ${Math.max(0, (t.coins || 0) + n)})`);
+  };
+
+  const buyItem = async (item) => {
+    const t = teams[session.teamId];
+    if (!t || (t.coins || 0) < item.price) return;
+    if (item.id === 'shield') {
+      // 천사카드는 인벤토리 없이 구매 즉시 방어 대기 상태
+      await updateDoc(teamRef(), { coins: t.coins - item.price, shield: true });
+      await log('shop', session.teamId, `${t.name} 천사카드 구매 🛡️`);
+    } else {
+      await updateDoc(teamRef(), {
+        coins: t.coins - item.price, items: [...(t.items || []), item.id],
+      });
+      await log('shop', session.teamId, `${t.name} ${item.name} 구매 🛒`);
+    }
+  };
+
+  const useItem = async (itemId, targetId) => {
+    const t = teams[session.teamId];
+    const item = itemById(itemId);
+    if (!t) return;
+    const mine = [...(t.items || [])];
+    const idx = mine.indexOf(itemId);
+    if (idx < 0) return;
+    mine.splice(idx, 1);
+    const target = targetId ? teams[targetId] : null;
+    const tRef = targetId ? doc(teamsCol, targetId) : null;
+
+    // 천사카드 자동 방어
+    if (target && IS_ATTACK.has(itemId) && target.shield) {
+      await updateDoc(tRef, { shield: false });
+      await updateDoc(teamRef(), { items: mine });
+      await log('attack', session.teamId, `${t.name} → ${target.name} ${item.name}! → 🛡️ 천사카드 방어됨`);
+      sendPush(targetId, '🛡️ 공격 방어!', `${t.name}의 ${item.name}을(를) 천사카드가 막았습니다`);
+      return;
+    }
+
+    const myUpdate = { items: mine };
+    switch (itemId) {
+      case 'double': myUpdate.doubleNext = true; break;
+      case 'triple': myUpdate.tripleNext = true; break;
+      case 'curse': await updateDoc(tRef, { cursed: true }); break;
+      case 'pull': await updateDoc(tRef, { position: Math.max(0, target.position - 3) }); break;
+      case 'stealCoin': {
+        const n = Math.min(3, target.coins || 0);
+        await updateDoc(tRef, { coins: (target.coins || 0) - n });
+        myUpdate.coins = (t.coins || 0) + n;
+        break;
+      }
+      case 'stealItem': {
+        const ti = [...(target.items || [])];
+        if (ti.length) {
+          const stolen = ti.splice(Math.floor(Math.random() * ti.length), 1)[0];
+          await updateDoc(tRef, { items: ti });
+          mine.push(stolen);
+        }
+        break;
+      }
+      default: break; // getOff, bike: 물리 집행 — 로그 공지가 곧 효과
+    }
+    await updateDoc(teamRef(), myUpdate);
+    await log(target ? 'attack' : 'item', session.teamId,
+      `${t.name}${target ? ` → ${target.name}` : ''} ${item.name} 사용! ${item.desc}`);
+    if (target) sendPush(targetId, '⚔️ 공격 받음!', `${t.name}: ${item.name} — ${item.desc}`);
+  };
+
+  // ── 코인 퀴즈 (스태프 출제) ──
+  const drawQuiz = () => {
+    const t = teams[session.teamId];
+    if (!t) return;
+    const used = t.usedQuizzes || [];
+    const pool = QUIZZES.map((_, i) => i).filter((i) => !used.includes(i));
+    if (!pool.length) return; // 퀴즈 소진
+    setQuizIdx(pool[Math.floor(Math.random() * pool.length)]);
+  };
+
+  const judgeQuiz = async (correct) => {
+    const t = teams[session.teamId];
+    const quiz = QUIZZES[quizIdx];
+    if (!t || !quiz) return;
+    setQuizIdx(null);
+    await updateDoc(teamRef(), {
+      usedQuizzes: [...(t.usedQuizzes || []), quizIdx],
+      ...(correct && { coins: (t.coins || 0) + quiz.coins }),
+    });
+    await log('quiz', session.teamId,
+      correct ? `${t.name} 퀴즈 정답! 코인 +${quiz.coins}` : `${t.name} 퀴즈 실패 (통과)`);
+  };
+
+  // 골인 순위: finishedAt 순
+  const ranking = Object.entries(teams)
+    .filter(([, t]) => t.finishedAt)
+    .sort((a, b) => (a[1].finishedAt?.seconds || 0) - (b[1].finishedAt?.seconds || 0));
+
+  // ── 본부(HQ) 전용 ──
+  const broadcast = async () => {
+    const msg = hqMsg.trim();
+    if (!msg) return;
+    setHqMsg('');
+    await log('broadcast', 'HQ', `📢 ${msg}`);
+    sendPush('all', '📢 본부 방송', msg);
+  };
+
+  const hqAdjust = async (teamId, field, delta) => {
+    const t = teams[teamId];
+    if (!t) return;
+    const value = Math.max(0, Math.min(field === 'position' ? FINISH : 999, (t[field] || 0) + delta));
+    await updateDoc(doc(teamsCol, teamId), { [field]: value });
+    await log('hq', teamId,
+      `본부 조정: ${t.name} ${field === 'coins' ? `코인 ${value}` : `→ ${STATIONS[value].name}`}`);
+  };
+
+  return (
+    <View style={st.root}>
+      <StatusBar style="light" />
+      <View style={st.header}>
+        <Text style={st.title}>2호선 브루마블</Text>
+        <Text style={st.sub}>
+          {session.role === 'hq' ? '본부' : `${session.teamId}팀 ${session.role === 'staff' ? '(스태프)' : ''}`}
+        </Text>
+      </View>
+
+      {/* 보드: 역 칸 + 팀 말 */}
+      <View style={{ width: boardSize, height: boardSize }}>
+        {STATIONS.map((s) => (
+          <View key={s.index} style={[st.station, {
+            left: s.x * boardSize - 21, top: s.y * boardSize - 15,
+            backgroundColor: s.index === 0 ? '#2ecc71' : s.index === FINISH ? '#e67e22' : '#1e2b3a',
+          }]}>
+            <Text style={st.stationText} numberOfLines={1}>{s.name}</Text>
+          </View>
+        ))}
+        {Object.entries(teams).map(([id, t], i) => {
+          const s = STATIONS[t.position] || STATIONS[0];
+          return (
+            <View key={id} style={[st.pin, {
+              left: s.x * boardSize - 9 + (i % 3) * 8,
+              top: s.y * boardSize - 34 - Math.floor(i / 3) * 6,
+              backgroundColor: TEAM_COLORS[id] || '#888',
+            }]}>
+              <Text style={st.pinText}>{id}</Text>
+            </View>
+          );
+        })}
+      </View>
+
+      {/* 골인 순위 (전원) */}
+      {ranking.length > 0 && (
+        <View style={st.rankRow}>
+          <Text style={st.rankText}>
+            🏁 {ranking.map(([id], i) => `${i + 1}위 ${id}팀`).join(' · ')}
+          </Text>
+        </View>
+      )}
+
+      {/* 팀 상태 + 현재 미션 (참가자·스태프 공통) */}
+      {myTeam && (
+        <View style={st.statusRow}>
+          <Text style={st.pos}>{STATIONS[myTeam.position].name}</Text>
+          <Text style={st.coin}>🪙 {myTeam.coins || 0}</Text>
+          {myTeam.shield && <Text style={st.coin}>🛡️</Text>}
+          {myTeam.cursed && <Text style={st.coin}>😈저주</Text>}
+          {(myTeam.doubleNext || myTeam.tripleNext) && (
+            <Text style={st.coin}>🎲x{myTeam.tripleNext ? 3 : 2}</Text>
+          )}
+          {!!myTeam.lastRoll && <Text style={st.coin}>🎲 {myTeam.lastRoll} → 이동 중</Text>}
+        </View>
+      )}
+
+      {/* 인벤토리 (스태프는 탭해서 사용) */}
+      {myTeam && (myTeam.items || []).length > 0 && (
+        <View style={st.invRow}>
+          {(myTeam.items || []).map((id, i) => (
+            <TouchableOpacity
+              key={`${id}-${i}`} style={st.invChip} disabled={!canControl}
+              onPress={() => {
+                const item = itemById(id);
+                if (item.target) setPendingUse(id);
+                else useItem(id, null);
+              }}>
+              <Text style={st.invChipText}>{itemById(id)?.name}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      )}
+
+      {/* 대상팀 선택 */}
+      {pendingUse && (
+        <View style={st.missionCard}>
+          <Text style={st.missionLabel}>{itemById(pendingUse)?.name} — 대상팀 선택</Text>
+          <View style={st.row}>
+            {Object.keys(teams).filter((id) => id !== session.teamId).map((id) => (
+              <TouchableOpacity key={id} style={[st.ctrlBtn, { backgroundColor: TEAM_COLORS[id] }]}
+                onPress={() => { useItem(pendingUse, id); setPendingUse(null); }}>
+                <Text style={st.btnText}>{id}팀</Text>
+              </TouchableOpacity>
+            ))}
+            <TouchableOpacity style={st.ctrlBtn} onPress={() => setPendingUse(null)}>
+              <Text style={st.btnText}>취소</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
+      {myTeam?.pendingMission && (
+        <View style={st.missionCard}>
+          <Text style={st.missionLabel}>현재 미션</Text>
+          <Text style={st.missionText}>{myTeam.pendingMission}</Text>
+          {canControl && (
+            <View style={st.row}>
+              <TouchableOpacity style={[st.ctrlBtn, st.ok]} onPress={() => judgeMission(true)}>
+                <Text style={st.btnText}>성공 ✅</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={st.ctrlBtn} onPress={() => judgeMission(false)}>
+                <Text style={st.btnText}>다시 뽑기 🔄</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+        </View>
+      )}
+
+      {/* 스태프 조작 */}
+      {canControl && session.teamId && myTeam && (
+        <View style={st.controls}>
+          <TouchableOpacity
+            style={[st.ctrlBtn, st.ok, (myTeam.lastRoll || myTeam.pendingMission) && st.disabled]}
+            onPress={roll}>
+            <Text style={st.btnText}>🎲 주사위</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[st.ctrlBtn, !myTeam.lastRoll && st.disabled]} onPress={arrive}>
+            <Text style={st.btnText}>도착 등록{myTeam.lastRoll ? ` (+${myTeam.lastRoll})` : ''}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={st.ctrlBtn} onPress={() => addCoins(1)}>
+            <Text style={st.btnText}>🪙 +1</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={st.ctrlBtn} onPress={() => addCoins(-1)}>
+            <Text style={st.btnText}>🪙 -1</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={st.ctrlBtn} onPress={() => move(-1)}>
+            <Text style={st.btnText}>◀1</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={st.ctrlBtn} onPress={() => move(1)}>
+            <Text style={st.btnText}>1▶</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={[st.ctrlBtn, shopOpen && st.ok]} onPress={() => setShopOpen(!shopOpen)}>
+            <Text style={st.btnText}>🛒 상점</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={st.ctrlBtn} onPress={drawQuiz}>
+            <Text style={st.btnText}>❓ 퀴즈</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {/* 코인 퀴즈 (스태프 출제 화면 — 정답 포함이므로 스태프만) */}
+      {canControl && quizIdx !== null && (
+        <View style={st.missionCard}>
+          <Text style={st.missionLabel}>코인 퀴즈 — 보상 🪙{QUIZZES[quizIdx].coins}</Text>
+          <Text style={st.missionText}>{QUIZZES[quizIdx].q}</Text>
+          <Text style={st.quizAnswer}>정답: {QUIZZES[quizIdx].a}</Text>
+          <View style={st.row}>
+            <TouchableOpacity style={[st.ctrlBtn, st.ok]} onPress={() => judgeQuiz(true)}>
+              <Text style={st.btnText}>정답 🪙+{QUIZZES[quizIdx].coins}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={st.ctrlBtn} onPress={() => judgeQuiz(false)}>
+              <Text style={st.btnText}>실패 (통과)</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
+
+      {/* 상점 */}
+      {canControl && shopOpen && myTeam && (
+        <View style={st.missionCard}>
+          <Text style={st.missionLabel}>상점 — 보유 🪙 {myTeam.coins || 0}</Text>
+          {ITEMS.map((item) => (
+            <View key={item.id} style={st.shopRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={st.missionText}>{item.name} — 🪙{item.price}</Text>
+                <Text style={st.shopDesc}>{item.desc}</Text>
+              </View>
+              <TouchableOpacity
+                style={[st.ctrlBtn, st.ok, (myTeam.coins || 0) < item.price && st.disabled]}
+                onPress={() => buyItem(item)}>
+                <Text style={st.btnText}>구매</Text>
+              </TouchableOpacity>
+            </View>
+          ))}
+        </View>
+      )}
+
+      {/* 본부 패널 */}
+      {session.role === 'hq' && (
+        <View style={st.missionCard}>
+          <View style={st.row}>
+            <TextInput
+              style={st.hqInput} value={hqMsg} onChangeText={setHqMsg}
+              placeholder="전체 방송 메시지..." placeholderTextColor="#567"
+              onSubmitEditing={broadcast}
+            />
+            <TouchableOpacity style={[st.ctrlBtn, st.ok]} onPress={broadcast}>
+              <Text style={st.btnText}>📢 발송</Text>
+            </TouchableOpacity>
+          </View>
+          {Object.entries(teams).sort().map(([id, t]) => (
+            <View key={id} style={st.shopRow}>
+              <Text style={[st.missionText, { color: TEAM_COLORS[id], width: 36 }]}>{id}팀</Text>
+              <Text style={[st.logLine, { flex: 1 }]}>
+                {STATIONS[t.position]?.name} · 🪙{t.coins || 0}
+                {t.shield ? ' 🛡️' : ''}{t.cursed ? ' 😈' : ''}{t.finishedAt ? ' 🏁' : ''}
+              </Text>
+              <TouchableOpacity style={st.miniBtn} onPress={() => hqAdjust(id, 'coins', -1)}>
+                <Text style={st.btnText}>🪙-</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={st.miniBtn} onPress={() => hqAdjust(id, 'coins', 1)}>
+                <Text style={st.btnText}>🪙+</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={st.miniBtn} onPress={() => hqAdjust(id, 'position', -1)}>
+                <Text style={st.btnText}>◀</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={st.miniBtn} onPress={() => hqAdjust(id, 'position', 1)}>
+                <Text style={st.btnText}>▶</Text>
+              </TouchableOpacity>
+            </View>
+          ))}
+        </View>
+      )}
+
+      {/* 실시간 알림 */}
+      <FlatList
+        style={st.log} data={logs} keyExtractor={(l) => l.id}
+        renderItem={({ item }) => (
+          <Text style={[st.logLine, item.type === 'broadcast' && st.broadcastLine]}>
+            <Text style={{ color: TEAM_COLORS[item.teamId] || '#aaa' }}>
+              [{item.teamId === 'HQ' ? '본부' : `${item.teamId}팀`}] </Text>
+            {item.message}
+          </Text>
+        )}
+      />
+    </View>
+  );
+}
+
+const st = StyleSheet.create({
+  root: { flex: 1, backgroundColor: '#0d1620', paddingTop: 50 },
+  entry: { flex: 1, backgroundColor: '#0d1620', justifyContent: 'center', padding: 32 },
+  header: { paddingHorizontal: 16, paddingBottom: 8 },
+  title: { color: '#fff', fontSize: 24, fontWeight: 'bold' },
+  sub: { color: '#8fa8bf', fontSize: 14, marginTop: 2 },
+  input: {
+    backgroundColor: '#1e2b3a', color: '#fff', borderRadius: 10, padding: 14,
+    fontSize: 18, marginTop: 24, textAlign: 'center',
   },
+  err: { color: '#e74c3c', marginTop: 8, textAlign: 'center' },
+  btn: { backgroundColor: '#2ecc71', borderRadius: 10, padding: 14, marginTop: 12 },
+  btnText: { color: '#fff', fontWeight: 'bold', textAlign: 'center', fontSize: 16 },
+  station: {
+    position: 'absolute', width: 42, height: 30, borderRadius: 6,
+    justifyContent: 'center', alignItems: 'center', paddingHorizontal: 2,
+  },
+  stationText: { color: '#cfe3f5', fontSize: 8 },
+  pin: {
+    position: 'absolute', width: 18, height: 18, borderRadius: 9,
+    justifyContent: 'center', alignItems: 'center', borderWidth: 1.5, borderColor: '#fff',
+  },
+  pinText: { color: '#fff', fontSize: 9, fontWeight: 'bold' },
+  controls: {
+    flexDirection: 'row', flexWrap: 'wrap', gap: 8, alignItems: 'center',
+    paddingHorizontal: 16, paddingVertical: 8,
+  },
+  row: { flexDirection: 'row', gap: 8, marginTop: 8 },
+  ctrlBtn: { backgroundColor: '#2c3e50', borderRadius: 8, padding: 12 },
+  ok: { backgroundColor: '#27ae60' },
+  disabled: { opacity: 0.35 },
+  pos: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
+  coin: { color: '#f1c40f', fontSize: 15, fontWeight: 'bold' },
+  statusRow: {
+    flexDirection: 'row', gap: 16, alignItems: 'center',
+    paddingHorizontal: 16, paddingTop: 4,
+  },
+  missionCard: {
+    backgroundColor: '#1e2b3a', borderRadius: 10, padding: 12,
+    marginHorizontal: 16, marginTop: 8,
+  },
+  missionLabel: { color: '#8fa8bf', fontSize: 12, marginBottom: 4 },
+  missionText: { color: '#fff', fontSize: 15, fontWeight: 'bold' },
+  invRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, paddingHorizontal: 16, paddingTop: 6 },
+  invChip: { backgroundColor: '#8e44ad', borderRadius: 14, paddingVertical: 5, paddingHorizontal: 10 },
+  invChipText: { color: '#fff', fontSize: 12, fontWeight: 'bold' },
+  shopRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    borderTopWidth: 1, borderTopColor: '#2c3e50', paddingVertical: 8,
+  },
+  shopDesc: { color: '#8fa8bf', fontSize: 12, marginTop: 2 },
+  log: { flex: 1, marginTop: 8, paddingHorizontal: 16 },
+  logLine: { color: '#cfe3f5', fontSize: 13, paddingVertical: 3 },
+  broadcastLine: { color: '#f1c40f', fontWeight: 'bold' },
+  rankRow: {
+    backgroundColor: '#e67e22', borderRadius: 8, marginHorizontal: 16,
+    marginTop: 6, padding: 8,
+  },
+  rankText: { color: '#fff', fontWeight: 'bold', fontSize: 14, textAlign: 'center' },
+  quizAnswer: { color: '#2ecc71', fontSize: 13, marginTop: 4 },
+  hqInput: {
+    flex: 1, backgroundColor: '#0d1620', color: '#fff', borderRadius: 8,
+    padding: 10, fontSize: 14,
+  },
+  miniBtn: { backgroundColor: '#2c3e50', borderRadius: 6, padding: 8 },
 });
