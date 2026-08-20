@@ -8,7 +8,7 @@ import {
   collection, doc, onSnapshot, setDoc, getDoc, updateDoc, addDoc, serverTimestamp,
   query, orderBy, limit,
 } from 'firebase/firestore';
-import { db } from './src/firebase';
+import { db, ensureAuth } from './src/firebase';
 import { STATIONS, FINISH, TEAM_COLORS } from './src/stations';
 import { RANDOM_MISSIONS, STATION_MISSIONS } from './src/missions';
 import { ITEMS, itemById, IS_ATTACK } from './src/items';
@@ -18,63 +18,177 @@ import { QUIZZES } from './src/quiz';
 const teamsCol = (gameId) => collection(db, 'games', gameId, 'teams');
 const logCol = (gameId) => collection(db, 'games', gameId, 'log');
 
-// 입장 코드: T1~T5 참가자, S1~S5 스태프(해당 팀 조작 가능), HQ 본부
-function parseCode(code) {
-  const c = code.trim().toUpperCase();
-  if (c === 'HQ') return { role: 'hq', teamId: null };
-  const m = c.match(/^([TS])([1-5])$/);
-  if (!m) return null;
-  return { role: m[1] === 'S' ? 'staff' : 'player', teamId: m[2] };
-}
+const NEW_TEAM = {
+  position: 0, coins: 0, items: [], shield: false,
+  doneMissions: [], inJail: false, finishedAt: null,
+};
 
 export default function App() {
-  const [session, setSession] = useState(null); // { role, teamId }
+  const [uid, setUid] = useState(null);
+  const [session, setSession] = useState(null); // { gameId, role, teamId }
+  useEffect(() => ensureAuth(setUid), []);
+  if (!uid) {
+    return (
+      <View style={st.entry}>
+        <StatusBar style="light" />
+        <Text style={st.sub}>연결 중...</Text>
+      </View>
+    );
+  }
   return session
-    ? <Board session={session} />
-    : <Entry onJoin={setSession} />;
+    ? <Board session={session} uid={uid} />
+    : <Entry uid={uid} onJoin={setSession} />;
 }
 
-function Entry({ onJoin }) {
+function Entry({ uid, onJoin }) {
+  const [mode, setMode] = useState('home'); // home | create | join | pick
+  const [teamCount, setTeamCount] = useState(5);
   const [room, setRoom] = useState('');
-  const [code, setCode] = useState('');
+  const [asStaff, setAsStaff] = useState(false);
+  const [staffKeyIn, setStaffKeyIn] = useState('');
+  const [roomInfo, setRoomInfo] = useState(null);
   const [err, setErr] = useState('');
-  const join = async () => {
-    const gameId = room.trim().toUpperCase();
-    if (!gameId) { setErr('방 코드를 입력하세요'); return; }
-    const s = parseCode(code);
-    if (!s) { setErr('코드 형식: T1~T5 / S1~S5 / HQ'); return; }
-    if (s.teamId) {
-      // 팀 문서가 없을 때만 생성 — merge로 덮으면 재입장 시 위치가 리셋됨
-      const ref = doc(teamsCol(gameId), s.teamId);
-      if (!(await getDoc(ref)).exists()) {
-        await setDoc(ref, {
-          name: `${s.teamId}팀`, position: 0, coins: 0, items: [], shield: false,
-          doneMissions: [], inJail: false, finishedAt: null,
-        });
+  const [busy, setBusy] = useState(false);
+
+  const createRoom = async () => {
+    if (busy) return;
+    setBusy(true); setErr('');
+    try {
+      const gameId = String(Math.floor(100000 + Math.random() * 900000));
+      const sKey = Math.random().toString(36).slice(2, 8).toUpperCase();
+      await setDoc(doc(db, 'games', gameId), {
+        ownerUid: uid, teamCount, createdAt: serverTimestamp(),
+      });
+      await setDoc(doc(db, 'games', gameId, 'private', 'keys'), { staffKey: sKey });
+      await setDoc(doc(db, 'games', gameId, 'members', uid), { role: 'hq' });
+      for (let i = 1; i <= teamCount; i += 1) {
+        await setDoc(doc(teamsCol(gameId), String(i)), { name: `${i}팀`, ...NEW_TEAM });
       }
-    }
-    registerPush(gameId, s.teamId, s.role); // 네이티브에서만 동작, 실패해도 게임 진행엔 무관
-    onJoin({ ...s, gameId });
+      registerPush(gameId, null, 'hq');
+      onJoin({ gameId, role: 'hq', teamId: null });
+    } catch (e) { setErr(`방 생성 실패: ${e.message}`); }
+    setBusy(false);
   };
+
+  const findRoom = async () => {
+    setErr('');
+    const gameId = room.trim();
+    if (!gameId) { setErr('방 코드를 입력하세요'); return; }
+    const snap = await getDoc(doc(db, 'games', gameId));
+    if (!snap.exists()) { setErr('방을 찾을 수 없습니다'); return; }
+    setRoomInfo({ gameId, teamCount: snap.data().teamCount || 5, ownerUid: snap.data().ownerUid });
+    setMode('pick');
+  };
+
+  const pickTeam = async (teamId) => {
+    setErr('');
+    const { gameId } = roomInfo;
+    const role = asStaff ? 'staff' : 'player';
+    try {
+      await setDoc(doc(db, 'games', gameId, 'members', uid), {
+        role, teamId, ...(asStaff && { key: staffKeyIn.trim().toUpperCase() }),
+      });
+      registerPush(gameId, teamId, role);
+      onJoin({ gameId, role, teamId });
+    } catch (e) {
+      setErr(asStaff ? '스태프키가 올바르지 않습니다' : `입장 실패: ${e.message}`);
+    }
+  };
+
+  const joinAsHq = async () => { // 방 생성자가 재접속할 때
+    setErr('');
+    try {
+      await setDoc(doc(db, 'games', roomInfo.gameId, 'members', uid), { role: 'hq' });
+      onJoin({ gameId: roomInfo.gameId, role: 'hq', teamId: null });
+    } catch (e) { setErr('본부 입장은 방을 만든 기기에서만 가능합니다'); }
+  };
+
   return (
     <View style={st.entry}>
       <StatusBar style="light" />
       <Text style={st.title}>2호선 브루마블</Text>
       <Text style={st.sub}>홍대입구 → 강남</Text>
-      <TextInput
-        style={st.input} value={room} onChangeText={setRoom}
-        placeholder="방 코드 (예: 0906)" placeholderTextColor="#567"
-        autoCapitalize="characters"
-      />
-      <TextInput
-        style={st.input} value={code} onChangeText={setCode}
-        placeholder="입장 코드 (T1, S3, HQ...)" placeholderTextColor="#567"
-        autoCapitalize="characters" onSubmitEditing={join}
-      />
+
+      {mode === 'home' && (
+        <>
+          <TouchableOpacity style={st.btn} onPress={() => setMode('create')}>
+            <Text style={st.btnText}>➕ 방 만들기</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={[st.btn, st.btnAlt]} onPress={() => setMode('join')}>
+            <Text style={st.btnText}>🚪 방 참가</Text>
+          </TouchableOpacity>
+        </>
+      )}
+
+      {mode === 'create' && (
+        <>
+          <Text style={st.label}>팀 수</Text>
+          <View style={st.stepper}>
+            <TouchableOpacity style={st.stepBtn} onPress={() => setTeamCount(Math.max(2, teamCount - 1))}>
+              <Text style={st.btnText}>−</Text>
+            </TouchableOpacity>
+            <Text style={st.stepValue}>{teamCount}팀</Text>
+            <TouchableOpacity style={st.stepBtn} onPress={() => setTeamCount(Math.min(8, teamCount + 1))}>
+              <Text style={st.btnText}>＋</Text>
+            </TouchableOpacity>
+          </View>
+          <TouchableOpacity style={[st.btn, busy && st.disabled]} onPress={createRoom}>
+            <Text style={st.btnText}>{busy ? '생성 중...' : '방 만들기 (내가 본부)'}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => setMode('home')}>
+            <Text style={st.linkText}>← 뒤로</Text>
+          </TouchableOpacity>
+        </>
+      )}
+
+      {mode === 'join' && (
+        <>
+          <TextInput
+            style={st.input} value={room} onChangeText={setRoom}
+            placeholder="방 코드 6자리" placeholderTextColor="#567"
+            keyboardType="number-pad" onSubmitEditing={findRoom}
+          />
+          <TouchableOpacity style={st.btn} onPress={findRoom}>
+            <Text style={st.btnText}>다음</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => setMode('home')}>
+            <Text style={st.linkText}>← 뒤로</Text>
+          </TouchableOpacity>
+        </>
+      )}
+
+      {mode === 'pick' && roomInfo && (
+        <>
+          <Text style={st.label}>팀 선택 — 방 {roomInfo.gameId}</Text>
+          <View style={st.teamGrid}>
+            {Array.from({ length: roomInfo.teamCount }, (_, i) => String(i + 1)).map((id) => (
+              <TouchableOpacity
+                key={id}
+                style={[st.teamBtn, { backgroundColor: TEAM_COLORS[id] || '#607d8b' }]}
+                onPress={() => pickTeam(id)}>
+                <Text style={st.btnText}>{id}팀</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+          <TouchableOpacity style={st.staffToggle} onPress={() => setAsStaff(!asStaff)}>
+            <Text style={st.linkText}>{asStaff ? '☑' : '☐'} 스태프로 입장</Text>
+          </TouchableOpacity>
+          {asStaff && (
+            <TextInput
+              style={st.input} value={staffKeyIn} onChangeText={setStaffKeyIn}
+              placeholder="스태프키" placeholderTextColor="#567" autoCapitalize="characters"
+            />
+          )}
+          <TouchableOpacity onPress={joinAsHq}>
+            <Text style={st.linkText}>본부(HQ)로 재입장</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => setMode('join')}>
+            <Text style={st.linkText}>← 뒤로</Text>
+          </TouchableOpacity>
+        </>
+      )}
+
       {!!err && <Text style={st.err}>{err}</Text>}
-      <TouchableOpacity style={st.btn} onPress={join}>
-        <Text style={st.btnText}>입장</Text>
-      </TouchableOpacity>
     </View>
   );
 }
@@ -94,8 +208,15 @@ function Board({ session }) {
   const prevRoll = useRef(null);
 
   const gameId = session.gameId;
+  const [hqKeys, setHqKeys] = useState(null);
   const log = (type, teamId, message) =>
     addDoc(logCol(gameId), { type, teamId, message, createdAt: serverTimestamp() });
+
+  useEffect(() => { // HQ만 스태프키 열람 가능 (보안 규칙)
+    if (session.role === 'hq') {
+      getDoc(doc(db, 'games', gameId, 'private', 'keys')).then((s) => setHqKeys(s.data()));
+    }
+  }, [gameId]);
 
   useEffect(() => {
     const u1 = onSnapshot(teamsCol(gameId), (snap) => {
@@ -537,6 +658,10 @@ function Board({ session }) {
       {/* 본부 패널 */}
       {session.role === 'hq' && (
         <View style={st.missionCard}>
+          <Text style={st.missionLabel}>
+            방 코드 <Text style={st.keyText}>{gameId}</Text>
+            {'   '}스태프키 <Text style={st.keyText}>{hqKeys?.staffKey || '...'}</Text>
+          </Text>
           <View style={st.row}>
             <TextInput
               style={st.hqInput} value={hqMsg} onChangeText={setHqMsg}
@@ -615,6 +740,28 @@ const st = StyleSheet.create({
   },
   err: { color: '#e74c3c', marginTop: 8, textAlign: 'center' },
   btn: { backgroundColor: C.green, borderRadius: 10, padding: 14, marginTop: 12 },
+  btnAlt: { backgroundColor: C.btn, borderWidth: 1, borderColor: C.panelBorder },
+  label: { color: C.subText, fontSize: 14, marginTop: 20, textAlign: 'center' },
+  stepper: {
+    flexDirection: 'row', justifyContent: 'center', alignItems: 'center',
+    gap: 20, marginTop: 10,
+  },
+  stepBtn: {
+    backgroundColor: C.btn, borderRadius: 10, width: 48, height: 48,
+    justifyContent: 'center', alignItems: 'center',
+    borderWidth: 1, borderColor: C.panelBorder,
+  },
+  stepValue: { color: C.text, fontSize: 24, fontWeight: 'bold', minWidth: 70, textAlign: 'center' },
+  linkText: { color: C.subText, fontSize: 14, textAlign: 'center', marginTop: 16 },
+  teamGrid: {
+    flexDirection: 'row', flexWrap: 'wrap', gap: 10, justifyContent: 'center',
+    marginTop: 12,
+  },
+  teamBtn: {
+    width: 90, paddingVertical: 16, borderRadius: 12, alignItems: 'center',
+  },
+  staffToggle: { marginTop: 4 },
+  keyText: { color: C.gold, fontWeight: 'bold', fontSize: 14 },
   btnText: { color: '#fff', fontWeight: 'bold', textAlign: 'center', fontSize: 16 },
   boardCenter: {
     position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,

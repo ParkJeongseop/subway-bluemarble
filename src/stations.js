@@ -24,5 +24,6 @@ export const START = 0;
 export const FINISH = STATIONS.length - 1;
 
 export const TEAM_COLORS = {
-  1: '#e74c3c', 2: '#3498db', 3: '#2ecc71', 4: '#f1c40f', 5: '#9b59b6',
+  1: '#e74c3c', 2: '#3498db', 3: '#2ecc71', 4: '#f1c40f',
+  5: '#9b59b6', 6: '#e67e22', 7: '#1abc9c', 8: '#fd79a8',
 };
