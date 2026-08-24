@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet, useWindowDimensions, FlatList,
-  AppState, Animated, Easing,
+  AppState, Animated, ScrollView,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import {
@@ -9,9 +9,9 @@ import {
   query, orderBy, limit,
 } from 'firebase/firestore';
 import { db, ensureAuth } from './src/firebase';
-import { STATIONS, FINISH, TEAM_COLORS } from './src/stations';
+import { STATIONS, FINISH, WANGSIMNI, SEOLLEUNG, JAIL, TEAM_COLORS } from './src/stations';
 import { RANDOM_MISSIONS, STATION_MISSIONS } from './src/missions';
-import { ITEMS, itemById, IS_ATTACK } from './src/items';
+import { ITEMS, itemById, IS_ATTACK, CATS } from './src/items';
 import { registerPush, sendPush, applyUpdateIfAny } from './src/push';
 import { QUIZZES } from './src/quiz';
 
@@ -200,6 +200,7 @@ function Board({ session }) {
   const [logs, setLogs] = useState([]);
   const [shopOpen, setShopOpen] = useState(false);
   const [pendingUse, setPendingUse] = useState(null); // 대상팀 선택 대기 중인 아이템 id
+  const [pendingPick, setPendingPick] = useState(false); // 지정 주사위 숫자 선택 중
   const [hqMsg, setHqMsg] = useState('');
   const [quizIdx, setQuizIdx] = useState(null); // 출제 중인 퀴즈 index
   // 주사위 애니메이션: lastRoll이 생기면 숫자 돌리다가 결과에 멈춤
@@ -275,9 +276,14 @@ function Board({ session }) {
     const t = teams[session.teamId];
     if (!t) return;
     const pos = Math.max(0, Math.min(FINISH, t.position + delta));
-    await updateDoc(teamRef(), { position: pos });
+    const finished = pos === FINISH && !t.finishedAt; // 페가수스 도착 경로 포함
+    await updateDoc(teamRef(), {
+      position: pos,
+      ...(finished && { finishedAt: serverTimestamp(), pegasus: false }),
+    });
     await log('move', session.teamId,
-      `${t.name} → ${STATIONS[pos].name}${pos === FINISH ? ' 🏁 골인!' : ''}`);
+      `${t.name} → ${STATIONS[pos].name}${finished ? ' 🏁 골인!' : ''}`);
+    if (finished) sendPush(gameId, 'all', '🏁 골인!', `${t.name}이 강남역에 도착했습니다!`);
   };
 
   // 미션 뽑기: 특정역 미션 우선, 아니면 랜덤풀에서 본인 팀이 안 한 것만
@@ -293,44 +299,132 @@ function Board({ session }) {
   // 스태프가 조작하므로 클라 난수로 충분 (서버 주사위 불필요)
   const roll = async () => {
     const t = teams[session.teamId];
-    if (!t || t.lastRoll || t.pendingMission) return;
-    const diceCount = t.tripleNext ? 3 : t.doubleNext ? 2 : 1;
-    const max = t.cursed ? 3 : 6; // 저주: 눈 1~3
-    const rolls = Array.from({ length: diceCount }, () => 1 + Math.floor(Math.random() * max));
-    const value = rolls.reduce((a, b) => a + b, 0);
+    if (!t || t.lastRoll || t.pendingMission || t.pegasus || t.inJail || t.atShortcut || t.pickMode) return;
+    const faces = t.cursed ? 3 : t.diceMod === 'dice9' ? 9 : 6;
+    const count = t.diceMod === 'triple' ? 3 : t.diceMod === 'double' ? 2 : 1;
+    const rolls = Array.from({ length: count }, () => 1 + Math.floor(Math.random() * faces));
+    const sum = rolls.reduce((a, b) => a + b, 0);
+    let value = sum;
+    let note = '';
+    if (t.diceMod === 'oddEven') {
+      if (sum % 2 === 1) { value = sum * 2; note = ` — 홀! 🍀 ${value}칸 전진`; }
+      else { value = -sum; note = ` — 짝! 💥 ${sum}칸 후진`; }
+    }
+    if (t.reversed) { value = -Math.abs(value); note += ' (거꾸로 주사위 😵)'; }
     await updateDoc(teamRef(), {
-      lastRoll: value, cursed: false, doubleNext: false, tripleNext: false,
+      lastRoll: value, cursed: false, reversed: false, diceMod: null,
     });
     await log('roll', session.teamId,
-      `${t.name} 주사위 🎲 ${rolls.join('+')}${diceCount > 1 ? ` = ${value}` : ''}${t.cursed ? ' (저주 😈)' : ''}`);
+      `${t.name} 주사위 🎲 ${rolls.join('+')}${count > 1 ? ` = ${sum}` : ''}${note}${t.cursed ? ' (저주 😈)' : ''}`);
+  };
+
+  // 지정 주사위: 굴리지 않고 숫자 확정 (아이템 소모는 usePickDice에서)
+  const usePickDice = async (n) => {
+    const t = teams[session.teamId];
+    const mine = [...(t.items || [])];
+    const idx = mine.indexOf('pickDice');
+    if (idx < 0) return;
+    mine.splice(idx, 1);
+    await updateDoc(teamRef(), { items: mine, lastRoll: n });
+    await log('roll', session.teamId, `${t.name} 지정 주사위 🎯 ${n}`);
   };
 
   const arrive = async () => {
     const t = teams[session.teamId];
     if (!t || !t.lastRoll) return;
-    const pos = Math.min(FINISH, t.position + t.lastRoll);
+    const pos = Math.max(0, Math.min(FINISH, t.position + t.lastRoll));
     const station = STATIONS[pos].name;
     const finished = pos === FINISH;
-    const mission = finished ? null : drawMission(t, station);
-    await updateDoc(teamRef(), {
-      position: pos, lastRoll: null, pendingMission: mission,
-      ...(finished && { finishedAt: serverTimestamp() }),
-    });
-    await log('move', session.teamId,
-      `${t.name} → ${station} 도착${finished ? ' 🏁 골인!' : ''}${mission ? ` / 미션: ${mission}` : ''}`);
+    const backward = t.lastRoll < 0;
+    const update = { position: pos, lastRoll: null };
+    let msg = `${t.name} → ${station} 도착`;
+    let mission = null;
+    if (finished) {
+      update.finishedAt = serverTimestamp();
+      msg += ' 🏁 골인!';
+    } else if (pos === JAIL && !backward) {
+      // 감옥: 다른 모든 팀이 미션 1회씩 성공해야 석방 (도착 시점 기준)
+      update.inJail = true;
+      update.jailBaseline = Object.fromEntries(
+        Object.entries(teams).filter(([id]) => id !== session.teamId)
+          .map(([id, tt]) => [id, (tt.doneMissions || []).length]),
+      );
+      msg += ' — 🔒 감옥!';
+    } else if (pos === WANGSIMNI && !backward) {
+      update.atShortcut = true; // 정확히 도착 → 지름길 선택권
+      msg += ' — 🚇 지름길 선택 가능!';
+    } else if (backward) {
+      msg += ' (후진 — 미션 없음)';
+    } else if (t.skipNextMission) {
+      update.skipNextMission = false;
+      msg += ' — 미션 면제 🎫';
+    } else if (t.pickMode) {
+      msg += ' — 미션 고르는 중 🤔'; // 스태프가 목록에서 선택
+    } else {
+      mission = drawMission(t, station);
+      update.pendingMission = mission;
+      if (mission) msg += ` / 미션: ${mission}`;
+    }
+    await updateDoc(teamRef(), update);
+    await log('move', session.teamId, msg);
     if (finished) sendPush(gameId, 'all', '🏁 골인!', `${t.name}이 강남역에 도착했습니다!`);
     else if (mission) sendPush(gameId, session.teamId, `📋 ${station} 미션`, mission);
+  };
+
+  // 미션 고르기/소생: 목록에서 선택
+  const chooseMission = async (m) => {
+    const t = teams[session.teamId];
+    if (!t) return;
+    await updateDoc(teamRef(), { pendingMission: m, pickMode: null });
+    await log('mission', session.teamId, `${t.name} 미션 선택: ${m}`);
+  };
+
+  // 지름길 선택
+  const takeShortcut = async (yes) => {
+    const t = teams[session.teamId];
+    if (!t || !t.atShortcut) return;
+    if (yes) {
+      const mission = drawMission(t, STATIONS[SEOLLEUNG].name);
+      await updateDoc(teamRef(), { atShortcut: false, position: SEOLLEUNG, pendingMission: mission });
+      await log('move', session.teamId,
+        `${t.name} 🚇 지름길! 수인분당선 환승 → 선릉 (도착 후 미션: ${mission})`);
+      sendPush(gameId, 'all', '🚇 지름길!', `${t.name}이 왕십리→선릉 지름길을 탔습니다!`);
+    } else {
+      const mission = drawMission(t, STATIONS[WANGSIMNI].name);
+      await updateDoc(teamRef(), { atShortcut: false, pendingMission: mission });
+      await log('move', session.teamId, `${t.name} 지름길 포기 / 미션: ${mission}`);
+    }
+  };
+
+  // 감옥 석방 조건: 다른 모든 팀이 감옥行 이후 미션 1회 이상 성공
+  const jailProgress = (t) => {
+    const base = t.jailBaseline || {};
+    const others = Object.entries(teams).filter(([id]) => id !== session.teamId);
+    const cleared = others.filter(([id, tt]) => (tt.doneMissions || []).length > (base[id] ?? 0));
+    return { cleared: cleared.length, total: others.length };
+  };
+
+  const releaseJail = async () => {
+    const t = teams[session.teamId];
+    if (!t || !t.inJail) return;
+    await updateDoc(teamRef(), { inJail: false, jailBaseline: null });
+    await log('move', session.teamId, `${t.name} 🔓 감옥 석방!`);
   };
 
   const judgeMission = async (success) => {
     const t = teams[session.teamId];
     if (!t || !t.pendingMission) return;
     if (success) {
-      await updateDoc(teamRef(), {
-        pendingMission: null,
-        doneMissions: [...(t.doneMissions || []), t.pendingMission],
-      });
-      await log('mission', session.teamId, `${t.name} 미션 성공 ✅`);
+      const done = [...(t.doneMissions || []), t.pendingMission];
+      if (t.extraMission) {
+        // 미션 2개 시키기: 성공 즉시 다음 미션 발동
+        const next = drawMission({ ...t, doneMissions: done }, '');
+        await updateDoc(teamRef(), { pendingMission: next, doneMissions: done, extraMission: false });
+        await log('mission', session.teamId, `${t.name} 미션 성공 ✅ — 미션 1개 더! ${next}`);
+      } else {
+        await updateDoc(teamRef(), { pendingMission: null, doneMissions: done });
+        await log('mission', session.teamId, `${t.name} 미션 성공 ✅`);
+      }
     } else {
       // 다시 뽑기: 현재 미션 제외 (특정역 미션은 재뽑기 없이 유지)
       const redraw = drawMission(t, '', [t.pendingMission]);
@@ -353,6 +447,13 @@ function Board({ session }) {
       // 천사카드는 인벤토리 없이 구매 즉시 방어 대기 상태
       await updateDoc(teamRef(), { coins: t.coins - item.price, shield: true });
       await log('shop', session.teamId, `${t.name} 천사카드 구매 🛡️`);
+    } else if (item.id === 'pegasus') {
+      // 페가수스는 구매 즉시 발동 ("그 즉시 직행")
+      await updateDoc(teamRef(), {
+        coins: t.coins - item.price, pegasus: true, lastRoll: null, pendingMission: null,
+      });
+      await log('shop', session.teamId, `${t.name} 🐴 페가수스 탑승! 강남 직행`);
+      sendPush(gameId, 'all', '🐴 페가수스!', `${t.name}이 페가수스에 탑승! 강남 직행 중 — 떨어트리기로 저격 가능`);
     } else {
       await updateDoc(teamRef(), {
         coins: t.coins - item.price, items: [...(t.items || []), item.id],
@@ -368,11 +469,30 @@ function Board({ session }) {
     const mine = [...(t.items || [])];
     const idx = mine.indexOf(itemId);
     if (idx < 0) return;
-    mine.splice(idx, 1);
+
+    // 자석: 대상 자동 지정 (말판에서 바로 앞에 있는 팀, 페가수스 제외)
+    if (itemId === 'magnet') {
+      const ahead = Object.entries(teams)
+        .filter(([id, tt]) => id !== session.teamId && !tt.pegasus && tt.position > t.position)
+        .sort((a, b) => a[1].position - b[1].position)[0];
+      if (!ahead) { await log('item', session.teamId, `${t.name} 자석 실패 — 앞에 팀이 없음 (아이템 유지)`); return; }
+      targetId = ahead[0];
+    }
     const target = targetId ? teams[targetId] : null;
     const tRef = targetId ? doc(teamsCol(gameId), targetId) : null;
 
-    // 천사카드 자동 방어
+    // 페가수스 탑승 팀은 떨어트리기 외 공격 무효 (아이템 소모 안 함)
+    if (target && IS_ATTACK.has(itemId) && itemId !== 'pegasusDrop' && target.pegasus) {
+      await log('attack', session.teamId, `${t.name} → ${target.name} ${item.name} 실패 — 🐴 페가수스 탑승 중 (아이템 유지)`);
+      return;
+    }
+    if (itemId === 'pegasusDrop' && !target?.pegasus) {
+      await log('attack', session.teamId, `${t.name} 떨어트리기 실패 — 대상이 페가수스 탑승 중이 아님 (아이템 유지)`);
+      return;
+    }
+    mine.splice(idx, 1);
+
+    // 천사카드 자동 방어 (찢기는 IS_ATTACK 미포함이라 안 막힘)
     if (target && IS_ATTACK.has(itemId) && target.shield) {
       await updateDoc(tRef, { shield: false });
       await updateDoc(teamRef(), { items: mine });
@@ -382,32 +502,54 @@ function Board({ session }) {
     }
 
     const myUpdate = { items: mine };
+    let extraLog = '';
     switch (itemId) {
-      case 'double': myUpdate.doubleNext = true; break;
-      case 'triple': myUpdate.tripleNext = true; break;
+      // 주사위 강화 (자기 버프)
+      case 'double': myUpdate.diceMod = 'double'; break;
+      case 'triple': myUpdate.diceMod = 'triple'; break;
+      case 'dice9': myUpdate.diceMod = 'dice9'; break;
+      case 'oddEven': myUpdate.diceMod = 'oddEven'; break;
+      // 미션 (자기 버프)
+      case 'missionSkip': myUpdate.skipNextMission = true; break;
+      case 'missionPick': myUpdate.pickMode = 'pool'; break;
+      case 'missionRevive': myUpdate.pickMode = 'done'; break;
+      // 페가수스
+      case 'pegasus':
+        myUpdate.pegasus = true; myUpdate.lastRoll = null; myUpdate.pendingMission = null;
+        sendPush(gameId, 'all', '🐴 페가수스!', `${t.name}이 페가수스에 탑승! 강남 직행 중 — 떨어트리기로 저격 가능`);
+        break;
+      case 'pegasusDrop':
+        await updateDoc(tRef, { pegasus: false });
+        extraLog = ' 다음 정차역에서 하차!';
+        sendPush(gameId, 'all', '🪂 격추!', `${target.name}의 페가수스가 격추됐습니다!`);
+        break;
+      // 공격
       case 'curse': await updateDoc(tRef, { cursed: true }); break;
-      case 'pull': await updateDoc(tRef, { position: Math.max(0, target.position - 3) }); break;
-      case 'stealCoin': {
-        const n = Math.min(3, target.coins || 0);
-        await updateDoc(tRef, { coins: (target.coins || 0) - n });
-        myUpdate.coins = (t.coins || 0) + n;
+      case 'reverse': await updateDoc(tRef, { reversed: true }); break;
+      case 'doubleMission': await updateDoc(tRef, { extraMission: true }); break;
+      case 'shieldTear': await updateDoc(tRef, { shield: false }); break;
+      case 'pull3': await updateDoc(tRef, { position: Math.max(0, target.position - 3) }); break;
+      case 'pull5': await updateDoc(tRef, { position: Math.max(0, target.position - 5) }); break;
+      case 'magnet':
+        await updateDoc(tRef, { position: t.position });
+        extraLog = ` 🧲 ${target.name}을 ${STATIONS[t.position].name}으로!`;
+        break;
+      // 기타
+      case 'slot': {
+        const d = 1 + Math.floor(Math.random() * 6);
+        const win = d % 2 === 0;
+        myUpdate.coins = Math.floor((t.coins || 0) * (win ? 2 : 0.5));
+        extraLog = ` 🎰 ${d} — ${win ? '짝! 코인 2배' : '홀... 코인 절반'} (${myUpdate.coins})`;
         break;
       }
-      case 'stealItem': {
-        const ti = [...(target.items || [])];
-        if (ti.length) {
-          const stolen = ti.splice(Math.floor(Math.random() * ti.length), 1)[0];
-          await updateDoc(tRef, { items: ti });
-          mine.push(stolen);
-        }
-        break;
-      }
-      default: break; // getOff, bike: 물리 집행 — 로그 공지가 곧 효과
+      default: break; // getOff, bike, americano, mychew: 물리 집행 — 로그·푸시가 곧 효과
     }
     await updateDoc(teamRef(), myUpdate);
     await log(target ? 'attack' : 'item', session.teamId,
-      `${t.name}${target ? ` → ${target.name}` : ''} ${item.name} 사용! ${item.desc}`);
-    if (target) sendPush(gameId, targetId, '⚔️ 공격 받음!', `${t.name}: ${item.name} — ${item.desc}`);
+      `${t.name}${target ? ` → ${target.name}` : ''} ${item.name} 사용!${extraLog || ` ${item.desc}`}`);
+    if (target && itemId !== 'pegasusDrop') {
+      sendPush(gameId, targetId, '⚔️ 공격 받음!', `${t.name}: ${item.name} — ${item.desc}`);
+    }
   };
 
   // ── 코인 퀴즈 (스태프 출제) ──
@@ -484,15 +626,23 @@ function Board({ session }) {
         )}
         {STATIONS.map((s) => {
           const special = s.index === 0 || s.index === FINISH;
+          const targetIdx = myTeam?.lastRoll
+            ? Math.max(0, Math.min(FINISH, myTeam.position + myTeam.lastRoll)) : null;
           return (
             <View key={s.index} style={[
               st.station,
               { left: s.x * boardSize - 21, top: s.y * boardSize - 15 },
               s.index === 0 && st.stationStart,
               s.index === FINISH && st.stationFinish,
+              s.index === targetIdx && st.stationTarget, // 이동 목적지 하이라이트
             ]}>
               <Text style={[st.stationText, special && st.stationTextSpecial]} numberOfLines={2}>
-                {s.index === 0 ? 'START\n홍대입구' : s.index === FINISH ? '🏁 강남\nFINISH' : s.name}
+                {s.index === 0 ? 'START\n홍대입구'
+                  : s.index === FINISH ? '🏁 강남\nFINISH'
+                  : s.index === JAIL ? '🔒강변'
+                  : s.index === WANGSIMNI ? '🚇왕십리'
+                  : s.index === SEOLLEUNG ? '🚇선릉'
+                  : s.name}
               </Text>
             </View>
           );
@@ -525,12 +675,21 @@ function Board({ session }) {
         <View style={st.statusRow}>
           <Text style={st.pos}>{STATIONS[myTeam.position].name}</Text>
           <Text style={st.coin}>🪙 {myTeam.coins || 0}</Text>
+          {myTeam.pegasus && <Text style={st.coin}>🐴 강남 직행 중</Text>}
+          {myTeam.inJail && <Text style={st.coin}>🔒 감옥</Text>}
           {myTeam.shield && <Text style={st.coin}>🛡️</Text>}
           {myTeam.cursed && <Text style={st.coin}>😈저주</Text>}
-          {(myTeam.doubleNext || myTeam.tripleNext) && (
-            <Text style={st.coin}>🎲x{myTeam.tripleNext ? 3 : 2}</Text>
+          {myTeam.reversed && <Text style={st.coin}>↩️거꾸로</Text>}
+          {myTeam.extraMission && <Text style={st.coin}>📋x2</Text>}
+          {myTeam.skipNextMission && <Text style={st.coin}>🎫면제</Text>}
+          {!!myTeam.diceMod && <Text style={st.coin}>
+            🎲{{ double: 'x2', triple: 'x3', dice9: '1~9', oddEven: '홀짝' }[myTeam.diceMod]}
+          </Text>}
+          {!!myTeam.lastRoll && (
+            <Text style={st.coin}>
+              🎲 {myTeam.lastRoll} → {STATIONS[Math.max(0, Math.min(FINISH, myTeam.position + myTeam.lastRoll))].name}
+            </Text>
           )}
-          {!!myTeam.lastRoll && <Text style={st.coin}>🎲 {myTeam.lastRoll} → 이동 중</Text>}
         </View>
       )}
 
@@ -542,7 +701,8 @@ function Board({ session }) {
               key={`${id}-${i}`} style={st.invChip} disabled={!canControl}
               onPress={() => {
                 const item = itemById(id);
-                if (item.target) setPendingUse(id);
+                if (id === 'pickDice') setPendingPick(true);
+                else if (item.target) setPendingUse(id);
                 else useItem(id, null);
               }}>
               <Text style={st.invChipText}>{itemById(id)?.name}</Text>
@@ -551,21 +711,101 @@ function Board({ session }) {
         </View>
       )}
 
-      {/* 대상팀 선택 */}
+      {/* 대상팀 선택 — 떨어트리기는 페가수스 팀만, 다른 공격은 페가수스 팀 제외 */}
       {pendingUse && (
         <View style={st.missionCard}>
           <Text style={st.missionLabel}>{itemById(pendingUse)?.name} — 대상팀 선택</Text>
           <View style={st.row}>
-            {Object.keys(teams).filter((id) => id !== session.teamId).map((id) => (
-              <TouchableOpacity key={id} style={[st.ctrlBtn, { backgroundColor: TEAM_COLORS[id] }]}
-                onPress={() => { useItem(pendingUse, id); setPendingUse(null); }}>
-                <Text style={st.btnText}>{id}팀</Text>
-              </TouchableOpacity>
-            ))}
+            {Object.entries(teams)
+              .filter(([id, tt]) => id !== session.teamId
+                && (pendingUse === 'pegasusDrop' ? tt.pegasus
+                  : !(IS_ATTACK.has(pendingUse) && tt.pegasus)))
+              .map(([id]) => (
+                <TouchableOpacity key={id} style={[st.ctrlBtn, { backgroundColor: TEAM_COLORS[id] }]}
+                  onPress={() => { useItem(pendingUse, id); setPendingUse(null); }}>
+                  <Text style={st.btnText}>{id}팀</Text>
+                </TouchableOpacity>
+              ))}
             <TouchableOpacity style={st.ctrlBtn} onPress={() => setPendingUse(null)}>
               <Text style={st.btnText}>취소</Text>
             </TouchableOpacity>
           </View>
+        </View>
+      )}
+
+      {/* 지정 주사위 — 숫자 선택 */}
+      {pendingPick && (
+        <View style={st.missionCard}>
+          <Text style={st.missionLabel}>🎯 지정 주사위 — 이동할 칸 수 선택</Text>
+          <View style={st.row}>
+            {[1, 2, 3, 4, 5, 6].map((n) => (
+              <TouchableOpacity key={n} style={[st.ctrlBtn, st.ok]}
+                onPress={() => { usePickDice(n); setPendingPick(false); }}>
+                <Text style={st.btnText}>{n}</Text>
+              </TouchableOpacity>
+            ))}
+            <TouchableOpacity style={st.ctrlBtn} onPress={() => setPendingPick(false)}>
+              <Text style={st.btnText}>취소</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
+
+      {/* 지름길 선택 (왕십리 정확 도착) */}
+      {canControl && myTeam?.atShortcut && (
+        <View style={st.missionCard}>
+          <Text style={st.missionLabel}>🚇 왕십리 — 수인분당선 지름길</Text>
+          <Text style={st.missionText}>선릉까지 환승 직행 가능! (미션 없이 이동, 선릉 도착 후 미션)</Text>
+          <View style={st.row}>
+            <TouchableOpacity style={[st.ctrlBtn, st.ok]} onPress={() => takeShortcut(true)}>
+              <Text style={st.btnText}>🚇 지름길 타기</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={st.ctrlBtn} onPress={() => takeShortcut(false)}>
+              <Text style={st.btnText}>그냥 진행 (미션)</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
+
+      {/* 감옥 (강변) */}
+      {myTeam?.inJail && (() => {
+        const jp = jailProgress(myTeam);
+        const canRelease = jp.cleared >= jp.total;
+        return (
+          <View style={st.missionCard}>
+            <Text style={st.missionLabel}>🔒 강변 감옥</Text>
+            <Text style={st.missionText}>
+              석방 조건: 다른 모든 팀이 미션 1회씩 성공 — {jp.cleared}/{jp.total}팀 완료
+            </Text>
+            {canControl && (
+              <View style={st.row}>
+                <TouchableOpacity
+                  style={[st.ctrlBtn, st.ok, !canRelease && st.disabled]}
+                  onPress={() => canRelease && releaseJail()}>
+                  <Text style={st.btnText}>🔓 석방</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+          </View>
+        );
+      })()}
+
+      {/* 미션 고르기 / 죽은자의 소생 */}
+      {canControl && myTeam?.pickMode && !myTeam?.pendingMission && !myTeam?.lastRoll && !myTeam?.atShortcut && (
+        <View style={st.missionCard}>
+          <Text style={st.missionLabel}>
+            {myTeam.pickMode === 'done' ? '⚰️ 죽은자의 소생 — 했던 미션 중 선택' : '🤔 미션 고르기'}
+          </Text>
+          <ScrollView style={{ maxHeight: 220 }}>
+            {(myTeam.pickMode === 'done'
+              ? (myTeam.doneMissions || [])
+              : RANDOM_MISSIONS.filter((m) => !(myTeam.doneMissions || []).includes(m)))
+              .map((m) => (
+                <TouchableOpacity key={m} style={st.pickRow} onPress={() => chooseMission(m)}>
+                  <Text style={st.logLine}>{m}</Text>
+                </TouchableOpacity>
+              ))}
+          </ScrollView>
         </View>
       )}
       {myTeam?.pendingMission && (
@@ -589,7 +829,9 @@ function Board({ session }) {
       {canControl && session.teamId && myTeam && (
         <View style={st.controls}>
           <TouchableOpacity
-            style={[st.ctrlBtn, st.ok, (myTeam.lastRoll || myTeam.pendingMission) && st.disabled]}
+            style={[st.ctrlBtn, st.ok,
+              (myTeam.lastRoll || myTeam.pendingMission || myTeam.pegasus || myTeam.inJail
+                || myTeam.atShortcut || myTeam.pickMode) && st.disabled]}
             onPress={roll}>
             <Text style={st.btnText}>🎲 주사위</Text>
           </TouchableOpacity>
@@ -635,23 +877,30 @@ function Board({ session }) {
         </View>
       )}
 
-      {/* 상점 */}
+      {/* 상점 (카테고리별) */}
       {canControl && shopOpen && myTeam && (
         <View style={st.missionCard}>
           <Text style={st.missionLabel}>상점 — 보유 🪙 {myTeam.coins || 0}</Text>
-          {ITEMS.map((item) => (
-            <View key={item.id} style={st.shopRow}>
-              <View style={{ flex: 1 }}>
-                <Text style={st.missionText}>{item.name} — 🪙{item.price}</Text>
-                <Text style={st.shopDesc}>{item.desc}</Text>
+          <ScrollView style={{ maxHeight: 340 }}>
+            {CATS.map((cat) => (
+              <View key={cat.key}>
+                <Text style={st.shopCat}>{cat.label}</Text>
+                {ITEMS.filter((i) => i.cat === cat.key).map((item) => (
+                  <View key={item.id} style={st.shopRow}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={st.missionText}>{item.name} — 🪙{item.price}</Text>
+                      <Text style={st.shopDesc}>{item.desc}</Text>
+                    </View>
+                    <TouchableOpacity
+                      style={[st.ctrlBtn, st.ok, (myTeam.coins || 0) < item.price && st.disabled]}
+                      onPress={() => buyItem(item)}>
+                      <Text style={st.btnText}>구매</Text>
+                    </TouchableOpacity>
+                  </View>
+                ))}
               </View>
-              <TouchableOpacity
-                style={[st.ctrlBtn, st.ok, (myTeam.coins || 0) < item.price && st.disabled]}
-                onPress={() => buyItem(item)}>
-                <Text style={st.btnText}>구매</Text>
-              </TouchableOpacity>
-            </View>
-          ))}
+            ))}
+          </ScrollView>
         </View>
       )}
 
@@ -793,6 +1042,7 @@ const st = StyleSheet.create({
   },
   stationStart: { backgroundColor: C.green, borderBottomColor: '#1d8a4a' },
   stationFinish: { backgroundColor: C.orange, borderBottomColor: '#b35f12' },
+  stationTarget: { borderWidth: 2, borderColor: C.gold }, // 이동 목적지
   stationText: { color: C.tileText, fontSize: 8, fontWeight: '700', textAlign: 'center' },
   stationTextSpecial: { color: '#fff', fontSize: 8, fontWeight: '900' },
   pin: {
@@ -834,6 +1084,13 @@ const st = StyleSheet.create({
     borderTopWidth: 1, borderTopColor: C.panelBorder, paddingVertical: 8,
   },
   shopDesc: { color: C.subText, fontSize: 12, marginTop: 2 },
+  shopCat: {
+    color: C.greenBright, fontSize: 13, fontWeight: 'bold',
+    marginTop: 10, marginBottom: 2,
+  },
+  pickRow: {
+    borderTopWidth: 1, borderTopColor: C.panelBorder, paddingVertical: 6,
+  },
   log: { flex: 1, marginTop: 8, paddingHorizontal: 16 },
   logLine: { color: '#cfe6d4', fontSize: 13, paddingVertical: 3 },
   broadcastLine: { color: C.gold, fontWeight: 'bold' },

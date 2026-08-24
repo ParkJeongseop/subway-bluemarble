@@ -22,6 +22,9 @@ function layout() {
 export const STATIONS = NAMES.map((name, i) => ({ name, index: i, ...layout()[i] }));
 export const START = 0;
 export const FINISH = STATIONS.length - 1;
+export const WANGSIMNI = NAMES.indexOf('왕십리'); // 지름길 출발 (정확히 도착 시)
+export const SEOLLEUNG = NAMES.indexOf('선릉');   // 지름길 도착 (수인분당선 환승)
+export const JAIL = NAMES.indexOf('강변');        // 감옥
 
 export const TEAM_COLORS = {
   1: '#e74c3c', 2: '#3498db', 3: '#2ecc71', 4: '#f1c40f',
