@@ -106,7 +106,7 @@ function Entry({ uid, onJoin }) {
   return (
     <View style={st.entry}>
       <StatusBar style="light" />
-      <Text style={st.title}>2호선 브루마블</Text>
+      <Text style={st.title}>2호선 부루마블</Text>
       <Text style={st.sub}>홍대입구 → 강남</Text>
 
       {mode === 'home' && (
@@ -602,7 +602,7 @@ function Board({ session }) {
     <View style={st.root}>
       <StatusBar style="light" />
       <View style={st.header}>
-        <Text style={st.title}>2호선 브루마블</Text>
+        <Text style={st.title}>2호선 부루마블</Text>
         <Text style={st.sub}>
           방 {gameId} · {session.role === 'hq' ? '본부' : `${session.teamId}팀 ${session.role === 'staff' ? '(스태프)' : ''}`}
         </Text>
