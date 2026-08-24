@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "2호선 부루마블",
+    "name": "subway-bluemarble",
     "slug": "subway-bluemarble",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -10,9 +10,13 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.parkjeongseop.subwaybluemarble",
       "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "CFBundleDisplayName": "2호선 부루마블"
       }
     },
+    "plugins": [
+      ["./plugins/withAndroidAppName", "2호선 부루마블"]
+    ],
     "android": {
       "package": "com.parkjeongseop.subwaybluemarble",
       "googleServicesFile": "./google-services.json",
