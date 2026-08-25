@@ -613,7 +613,7 @@ function Board({ session }) {
         {/* 중앙 로고 */}
         <View style={st.boardCenter} pointerEvents="none">
           <Text style={st.boardLogoIcon}>🚇</Text>
-          <Text style={st.boardLogo}>2호선{'\n'}브루마블</Text>
+          <Text style={st.boardLogo}>2호선{'\n'}부루마블</Text>
           <Text style={st.boardLogoSub}>홍대입구 → 강남</Text>
         </View>
         {/* 주사위 연출 오버레이 */}
