@@ -26,6 +26,9 @@ export const WANGSIMNI = NAMES.indexOf('왕십리'); // 지름길 출발 (정확
 export const SEOLLEUNG = NAMES.indexOf('선릉');   // 지름길 도착 (수인분당선 환승)
 export const JAIL = NAMES.indexOf('강변');        // 감옥
 
+// 지름길 경유역 (수인분당선 왕십리→선릉, 통과만 하는 표시용 칸)
+export const SHORTCUT_STATIONS = ['서울숲', '압구정\n로데오', '강남구청', '선정릉'];
+
 export const TEAM_COLORS = {
   1: '#e74c3c', 2: '#3498db', 3: '#2ecc71', 4: '#f1c40f',
   5: '#9b59b6', 6: '#e67e22', 7: '#1abc9c', 8: '#fd79a8',

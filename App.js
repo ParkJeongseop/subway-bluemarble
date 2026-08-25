@@ -9,7 +9,9 @@ import {
   query, orderBy, limit,
 } from 'firebase/firestore';
 import { db, ensureAuth } from './src/firebase';
-import { STATIONS, FINISH, WANGSIMNI, SEOLLEUNG, JAIL, TEAM_COLORS } from './src/stations';
+import {
+  STATIONS, FINISH, WANGSIMNI, SEOLLEUNG, JAIL, SHORTCUT_STATIONS, TEAM_COLORS,
+} from './src/stations';
 import { RANDOM_MISSIONS, STATION_MISSIONS } from './src/missions';
 import { ITEMS, itemById, IS_ATTACK, CATS } from './src/items';
 import { registerPush, sendPush, applyUpdateIfAny } from './src/push';
@@ -616,19 +618,34 @@ function Board({ session }) {
           <Text style={st.boardLogo}>2호선{'\n'}부루마블</Text>
           <Text style={st.boardLogoSub}>홍대입구 → 강남</Text>
         </View>
-        {/* 지름길 점선 경로 (왕십리 ↔ 선릉, 수인분당선) */}
-        {Array.from({ length: 9 }, (_, i) => {
-          const t = (i + 1) / 10;
+        {/* 지름길 경로 (왕십리 ↔ 선릉, 수인분당선): 점선 + 경유역 미니 타일 */}
+        {Array.from({ length: 11 }, (_, i) => {
+          const t = (i + 1) / 12;
           const a = STATIONS[WANGSIMNI];
           const b = STATIONS[SEOLLEUNG];
           return (
             <View
-              key={`sc${i}`}
+              key={`scd${i}`}
               style={[st.shortcutDot, {
-                left: (a.x + (b.x - a.x) * t) * boardSize - 4,
-                top: (a.y + (b.y - a.y) * t) * boardSize - 4,
+                left: (a.x + (b.x - a.x) * t) * boardSize - 3,
+                top: (a.y + (b.y - a.y) * t) * boardSize - 3,
               }]}
             />
+          );
+        })}
+        {SHORTCUT_STATIONS.map((name, i) => {
+          const t = (i + 1) / (SHORTCUT_STATIONS.length + 1);
+          const a = STATIONS[WANGSIMNI];
+          const b = STATIONS[SEOLLEUNG];
+          return (
+            <View
+              key={`scs${name}`}
+              style={[st.shortcutStation, {
+                left: (a.x + (b.x - a.x) * t) * boardSize - 24,
+                top: (a.y + (b.y - a.y) * t) * boardSize - 13,
+              }]}>
+              <Text style={st.shortcutStationText} numberOfLines={2}>{name}</Text>
+            </View>
           );
         })}
         {/* 주사위 연출 오버레이 */}
@@ -1059,8 +1076,17 @@ const st = StyleSheet.create({
   stationFinish: { backgroundColor: C.orange, borderBottomColor: '#b35f12' },
   stationTarget: { borderWidth: 2, borderColor: C.gold }, // 이동 목적지
   shortcutDot: {
-    position: 'absolute', width: 8, height: 8, borderRadius: 4,
-    backgroundColor: '#f2c94c', opacity: 0.55, // 수인분당선 노란 계열
+    position: 'absolute', width: 6, height: 6, borderRadius: 3,
+    backgroundColor: '#f2c94c', opacity: 0.45, // 수인분당선 노란 계열
+  },
+  shortcutStation: {
+    position: 'absolute', width: 48, height: 26, borderRadius: 5,
+    justifyContent: 'center', alignItems: 'center', paddingHorizontal: 2,
+    backgroundColor: '#f2c94c',
+    borderBottomWidth: 2, borderBottomColor: '#c49b1e',
+  },
+  shortcutStationText: {
+    color: '#4a3a08', fontSize: 7, fontWeight: '800', textAlign: 'center', lineHeight: 8,
   },
   stationText: { color: C.tileText, fontSize: 8, fontWeight: '700', textAlign: 'center' },
   stationTextSpecial: { color: '#fff', fontSize: 8, fontWeight: '900' },
