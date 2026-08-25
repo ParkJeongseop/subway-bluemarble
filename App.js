@@ -616,6 +616,21 @@ function Board({ session }) {
           <Text style={st.boardLogo}>2호선{'\n'}부루마블</Text>
           <Text style={st.boardLogoSub}>홍대입구 → 강남</Text>
         </View>
+        {/* 지름길 점선 경로 (왕십리 ↔ 선릉, 수인분당선) */}
+        {Array.from({ length: 9 }, (_, i) => {
+          const t = (i + 1) / 10;
+          const a = STATIONS[WANGSIMNI];
+          const b = STATIONS[SEOLLEUNG];
+          return (
+            <View
+              key={`sc${i}`}
+              style={[st.shortcutDot, {
+                left: (a.x + (b.x - a.x) * t) * boardSize - 4,
+                top: (a.y + (b.y - a.y) * t) * boardSize - 4,
+              }]}
+            />
+          );
+        })}
         {/* 주사위 연출 오버레이 */}
         {diceFace !== null && (
           <View style={st.diceLayer} pointerEvents="none">
@@ -1043,6 +1058,10 @@ const st = StyleSheet.create({
   stationStart: { backgroundColor: C.green, borderBottomColor: '#1d8a4a' },
   stationFinish: { backgroundColor: C.orange, borderBottomColor: '#b35f12' },
   stationTarget: { borderWidth: 2, borderColor: C.gold }, // 이동 목적지
+  shortcutDot: {
+    position: 'absolute', width: 8, height: 8, borderRadius: 4,
+    backgroundColor: '#f2c94c', opacity: 0.55, // 수인분당선 노란 계열
+  },
   stationText: { color: C.tileText, fontSize: 8, fontWeight: '700', textAlign: 'center' },
   stationTextSpecial: { color: '#fff', fontSize: 8, fontWeight: '900' },
   pin: {
