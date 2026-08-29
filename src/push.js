@@ -47,7 +47,10 @@ export async function sendPush(gameId, teamId, title, body) {
     await fetch('https://exp.host/--/api/v2/push/send', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(targets.map((to) => ({ to, title, body, sound: 'default' }))),
+      // priority high: Android Doze(절전)에서도 즉시 전달 — 공격/미션 알림은 실시간성이 핵심
+      body: JSON.stringify(targets.map((to) => ({
+        to, title, body, sound: 'default', priority: 'high',
+      }))),
     });
   } catch (e) {
     console.log('push send failed:', e.message);
