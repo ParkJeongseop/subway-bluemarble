@@ -944,11 +944,17 @@ function Board({ session, onLeave }) {
             style={[st.ctrlBtn, !myTeam.lastRoll && st.disabled]} onPress={arrive}>
             <Text style={st.btnText}>도착 등록{myTeam.lastRoll ? ` (+${myTeam.lastRoll})` : ''}</Text>
           </TouchableOpacity>
+          <TouchableOpacity style={st.ctrlBtn} onPress={() => addCoins(10)}>
+            <Text style={st.btnText}>🪙 +10</Text>
+          </TouchableOpacity>
           <TouchableOpacity style={st.ctrlBtn} onPress={() => addCoins(1)}>
             <Text style={st.btnText}>🪙 +1</Text>
           </TouchableOpacity>
           <TouchableOpacity style={st.ctrlBtn} onPress={() => addCoins(-1)}>
             <Text style={st.btnText}>🪙 -1</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={st.ctrlBtn} onPress={() => addCoins(-10)}>
+            <Text style={st.btnText}>🪙 -10</Text>
           </TouchableOpacity>
           <TouchableOpacity style={st.ctrlBtn} onPress={() => move(-1)}>
             <Text style={st.btnText}>◀1</Text>
@@ -961,6 +967,15 @@ function Board({ session, onLeave }) {
           </TouchableOpacity>
           <TouchableOpacity style={st.ctrlBtn} onPress={drawQuiz}>
             <Text style={st.btnText}>❓ 퀴즈</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {/* 참가자: 상점 구경 (구매는 스태프가) */}
+      {!canControl && myTeam && (
+        <View style={st.controls}>
+          <TouchableOpacity style={[st.ctrlBtn, shopOpen && st.ok]} onPress={() => setShopOpen(!shopOpen)}>
+            <Text style={st.btnText}>🛒 상점 구경</Text>
           </TouchableOpacity>
         </View>
       )}
@@ -982,10 +997,12 @@ function Board({ session, onLeave }) {
         </View>
       )}
 
-      {/* 상점 (카테고리별) */}
-      {canControl && shopOpen && myTeam && (
+      {/* 상점 (카테고리별) — 참가자는 열람만, 구매는 스태프 */}
+      {shopOpen && myTeam && (
         <View style={st.missionCard}>
-          <Text style={st.missionLabel}>상점 — 보유 🪙 {myTeam.coins || 0}</Text>
+          <Text style={st.missionLabel}>
+            상점 — 보유 🪙 {myTeam.coins || 0}{!canControl ? '  (구매는 스태프에게!)' : ''}
+          </Text>
           <ScrollView style={{ maxHeight: 340 }} nestedScrollEnabled>
             {CATS.map((cat) => (
               <View key={cat.key}>
@@ -996,11 +1013,13 @@ function Board({ session, onLeave }) {
                       <Text style={st.missionText}>{item.name} — 🪙{item.price}</Text>
                       <Text style={st.shopDesc}>{item.desc}</Text>
                     </View>
-                    <TouchableOpacity
-                      style={[st.ctrlBtn, st.ok, (myTeam.coins || 0) < item.price && st.disabled]}
-                      onPress={() => buyItem(item)}>
-                      <Text style={st.btnText}>구매</Text>
-                    </TouchableOpacity>
+                    {canControl && (
+                      <TouchableOpacity
+                        style={[st.ctrlBtn, st.ok, (myTeam.coins || 0) < item.price && st.disabled]}
+                        onPress={() => buyItem(item)}>
+                        <Text style={st.btnText}>구매</Text>
+                      </TouchableOpacity>
+                    )}
                   </View>
                 ))}
               </View>
@@ -1033,11 +1052,17 @@ function Board({ session, onLeave }) {
                 {STATIONS[t.position]?.name} · 🪙{t.coins || 0}
                 {t.shield ? ' 🛡️' : ''}{t.cursed ? ' 😈' : ''}{t.finishedAt ? ' 🏁' : ''}
               </Text>
+              <TouchableOpacity style={st.miniBtn} onPress={() => hqAdjust(id, 'coins', -10)}>
+                <Text style={st.btnText}>🪙-10</Text>
+              </TouchableOpacity>
               <TouchableOpacity style={st.miniBtn} onPress={() => hqAdjust(id, 'coins', -1)}>
                 <Text style={st.btnText}>🪙-</Text>
               </TouchableOpacity>
               <TouchableOpacity style={st.miniBtn} onPress={() => hqAdjust(id, 'coins', 1)}>
                 <Text style={st.btnText}>🪙+</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={st.miniBtn} onPress={() => hqAdjust(id, 'coins', 10)}>
+                <Text style={st.btnText}>🪙+10</Text>
               </TouchableOpacity>
               <TouchableOpacity style={st.miniBtn} onPress={() => hqAdjust(id, 'position', -1)}>
                 <Text style={st.btnText}>◀</Text>
