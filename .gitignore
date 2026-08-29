@@ -41,3 +41,5 @@ yarn-error.*
 /android
 
 fcm-service-account.json
+
+store/app-release.aab
