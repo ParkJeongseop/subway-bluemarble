@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet, useWindowDimensions, FlatList,
-  AppState, Animated, ScrollView,
+  AppState, Animated, ScrollView, BackHandler, Alert, Platform,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { StatusBar } from 'expo-status-bar';
 import {
   collection, doc, onSnapshot, setDoc, getDoc, updateDoc, addDoc, serverTimestamp,
@@ -28,8 +29,33 @@ const NEW_TEAM = {
 export default function App() {
   const [uid, setUid] = useState(null);
   const [session, setSession] = useState(null); // { gameId, role, teamId }
+  const [restoring, setRestoring] = useState(true);
   useEffect(() => ensureAuth(setUid), []);
-  if (!uid) {
+
+  // 마지막 세션 복원: 앱을 껐다 켜도 방으로 자동 복귀
+  useEffect(() => {
+    AsyncStorage.getItem('session')
+      .then(async (raw) => {
+        if (!raw) return;
+        const s = JSON.parse(raw);
+        const snap = await getDoc(doc(db, 'games', s.gameId));
+        if (snap.exists()) setSession(s);
+        else AsyncStorage.removeItem('session');
+      })
+      .catch(() => {})
+      .finally(() => setRestoring(false));
+  }, []);
+
+  const join = (s) => {
+    setSession(s);
+    AsyncStorage.setItem('session', JSON.stringify(s)).catch(() => {});
+  };
+  const leave = () => {
+    setSession(null);
+    AsyncStorage.removeItem('session').catch(() => {});
+  };
+
+  if (!uid || restoring) {
     return (
       <View style={st.entry}>
         <StatusBar style="light" />
@@ -38,8 +64,8 @@ export default function App() {
     );
   }
   return session
-    ? <Board session={session} uid={uid} />
-    : <Entry uid={uid} onJoin={setSession} />;
+    ? <Board session={session} uid={uid} onLeave={leave} />
+    : <Entry uid={uid} onJoin={join} />;
 }
 
 function Entry({ uid, onJoin }) {
@@ -51,6 +77,21 @@ function Entry({ uid, onJoin }) {
   const [roomInfo, setRoomInfo] = useState(null);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
+
+  // 화면 단계별 뒤로: pick → join → home (home에선 기본 동작 = 앱 종료)
+  const goBack = () => {
+    setErr('');
+    if (mode === 'pick') setMode('join');
+    else setMode('home');
+  };
+  useEffect(() => {
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (mode === 'home') return false;
+      goBack();
+      return true;
+    });
+    return () => sub.remove();
+  }, [mode]);
 
   const createRoom = async () => {
     if (busy) return;
@@ -108,6 +149,11 @@ function Entry({ uid, onJoin }) {
   return (
     <View style={st.entry}>
       <StatusBar style="light" />
+      {mode !== 'home' && (
+        <TouchableOpacity style={st.backBtn} onPress={goBack} hitSlop={12}>
+          <Text style={st.backBtnText}>← 뒤로</Text>
+        </TouchableOpacity>
+      )}
       <Text style={st.title}>2호선 부루마블</Text>
       <Text style={st.sub}>홍대입구 → 강남</Text>
 
@@ -137,9 +183,6 @@ function Entry({ uid, onJoin }) {
           <TouchableOpacity style={[st.btn, busy && st.disabled]} onPress={createRoom}>
             <Text style={st.btnText}>{busy ? '생성 중...' : '방 만들기 (내가 본부)'}</Text>
           </TouchableOpacity>
-          <TouchableOpacity onPress={() => setMode('home')}>
-            <Text style={st.linkText}>← 뒤로</Text>
-          </TouchableOpacity>
         </>
       )}
 
@@ -152,9 +195,6 @@ function Entry({ uid, onJoin }) {
           />
           <TouchableOpacity style={st.btn} onPress={findRoom}>
             <Text style={st.btnText}>다음</Text>
-          </TouchableOpacity>
-          <TouchableOpacity onPress={() => setMode('home')}>
-            <Text style={st.linkText}>← 뒤로</Text>
           </TouchableOpacity>
         </>
       )}
@@ -184,9 +224,6 @@ function Entry({ uid, onJoin }) {
           <TouchableOpacity onPress={joinAsHq}>
             <Text style={st.linkText}>본부(HQ)로 재입장</Text>
           </TouchableOpacity>
-          <TouchableOpacity onPress={() => setMode('join')}>
-            <Text style={st.linkText}>← 뒤로</Text>
-          </TouchableOpacity>
         </>
       )}
 
@@ -195,7 +232,7 @@ function Entry({ uid, onJoin }) {
   );
 }
 
-function Board({ session }) {
+function Board({ session, onLeave }) {
   const { width, height } = useWindowDimensions();
   const boardSize = Math.min(width, height * 0.55); // 정사각 보드, 조작부·로그 공간 확보
   const [teams, setTeams] = useState({});
@@ -236,6 +273,25 @@ function Board({ session }) {
   useEffect(() => {
     const sub = AppState.addEventListener('change', (s) => {
       if (s === 'active') applyUpdateIfAny();
+    });
+    return () => sub.remove();
+  }, []);
+
+  // Android 뒤로가기 = 방 나가기 확인 (실수로 앱 종료 방지)
+  const confirmLeave = () => {
+    if (Platform.OS === 'web') { // RN Web은 Alert.alert 미지원
+      if (window.confirm(`방 ${gameId}에서 나가시겠습니까?`)) onLeave();
+      return;
+    }
+    Alert.alert('방 나가기', `방 ${gameId}에서 나가시겠습니까?\n(방 코드로 다시 들어올 수 있습니다)`, [
+      { text: '취소', style: 'cancel' },
+      { text: '나가기', style: 'destructive', onPress: onLeave },
+    ]);
+  };
+  useEffect(() => {
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      confirmLeave();
+      return true;
     });
     return () => sub.remove();
   }, []);
@@ -604,12 +660,18 @@ function Board({ session }) {
     <View style={st.root}>
       <StatusBar style="light" />
       <View style={st.header}>
-        <Text style={st.title}>2호선 부루마블</Text>
-        <Text style={st.sub}>
-          방 {gameId} · {session.role === 'hq' ? '본부' : `${session.teamId}팀 ${session.role === 'staff' ? '(스태프)' : ''}`}
-        </Text>
+        <View style={{ flex: 1 }}>
+          <Text style={st.title}>2호선 부루마블</Text>
+          <Text style={st.sub}>
+            방 {gameId} · {session.role === 'hq' ? '본부' : `${session.teamId}팀 ${session.role === 'staff' ? '(스태프)' : ''}`}
+          </Text>
+        </View>
+        <TouchableOpacity style={st.leaveBtn} onPress={confirmLeave} hitSlop={8}>
+          <Text style={st.leaveBtnText}>나가기</Text>
+        </TouchableOpacity>
       </View>
 
+      <ScrollView style={{ flex: 1 }} keyboardShouldPersistTaps="handled">
       {/* 보드: 역 칸 + 팀 말 */}
       <View style={{ width: boardSize, height: boardSize }}>
         {/* 중앙 로고 */}
@@ -828,7 +890,7 @@ function Board({ session }) {
           <Text style={st.missionLabel}>
             {myTeam.pickMode === 'done' ? '⚰️ 죽은자의 소생 — 했던 미션 중 선택' : '🤔 미션 고르기'}
           </Text>
-          <ScrollView style={{ maxHeight: 220 }}>
+          <ScrollView style={{ maxHeight: 220 }} nestedScrollEnabled>
             {(myTeam.pickMode === 'done'
               ? (myTeam.doneMissions || [])
               : RANDOM_MISSIONS.filter((m) => !(myTeam.doneMissions || []).includes(m)))
@@ -913,7 +975,7 @@ function Board({ session }) {
       {canControl && shopOpen && myTeam && (
         <View style={st.missionCard}>
           <Text style={st.missionLabel}>상점 — 보유 🪙 {myTeam.coins || 0}</Text>
-          <ScrollView style={{ maxHeight: 340 }}>
+          <ScrollView style={{ maxHeight: 340 }} nestedScrollEnabled>
             {CATS.map((cat) => (
               <View key={cat.key}>
                 <Text style={st.shopCat}>{cat.label}</Text>
@@ -977,7 +1039,9 @@ function Board({ session }) {
         </View>
       )}
 
-      {/* 실시간 알림 */}
+      </ScrollView>
+
+      {/* 실시간 알림 (하단 고정) */}
       <FlatList
         style={st.log} data={logs} keyExtractor={(l) => l.id}
         renderItem={({ item }) => (
@@ -1011,7 +1075,17 @@ const C = {
 const st = StyleSheet.create({
   root: { flex: 1, backgroundColor: C.bg, paddingTop: 50 },
   entry: { flex: 1, backgroundColor: C.bg, justifyContent: 'center', padding: 32 },
-  header: { paddingHorizontal: 16, paddingBottom: 8 },
+  header: {
+    flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: 16, paddingBottom: 8,
+  },
+  backBtn: { position: 'absolute', top: 56, left: 20, zIndex: 10, padding: 4 },
+  backBtnText: { color: C.text, fontSize: 16, fontWeight: 'bold' },
+  leaveBtn: {
+    backgroundColor: C.btn, borderRadius: 8, paddingVertical: 8, paddingHorizontal: 12,
+    borderWidth: 1, borderColor: C.panelBorder,
+  },
+  leaveBtnText: { color: C.subText, fontSize: 13, fontWeight: 'bold' },
   title: { color: C.text, fontSize: 24, fontWeight: 'bold' },
   sub: { color: C.subText, fontSize: 14, marginTop: 2 },
   input: {
@@ -1136,7 +1210,10 @@ const st = StyleSheet.create({
   pickRow: {
     borderTopWidth: 1, borderTopColor: C.panelBorder, paddingVertical: 6,
   },
-  log: { flex: 1, marginTop: 8, paddingHorizontal: 16 },
+  log: {
+    height: 140, marginTop: 8, paddingHorizontal: 16,
+    borderTopWidth: 1, borderTopColor: C.panelBorder,
+  },
   logLine: { color: '#cfe6d4', fontSize: 13, paddingVertical: 3 },
   broadcastLine: { color: C.gold, fontWeight: 'bold' },
   rankRow: {
