@@ -803,7 +803,8 @@ function Board({ session, onLeave }) {
         <View style={st.invRow}>
           {(myTeam.items || []).map((id, i) => (
             <TouchableOpacity
-              key={`${id}-${i}`} style={st.invChip} disabled={!canControl}
+              key={`${id}-${i}`} style={st.invChip}
+              disabled={!canControl && !!itemById(id)?.target} // 공격(대상 지정)만 스태프 전용
               onPress={() => {
                 const item = itemById(id);
                 if (id === 'pickDice') setPendingPick(true);
@@ -856,8 +857,8 @@ function Board({ session, onLeave }) {
         </View>
       )}
 
-      {/* 지름길 선택 (왕십리 정확 도착) */}
-      {canControl && myTeam?.atShortcut && (
+      {/* 지름길 선택 (왕십리 정확 도착) — 팀이 직접 결정 */}
+      {myTeam?.atShortcut && (
         <View style={st.missionCard}>
           <Text style={st.missionLabel}>🚇 왕십리 — 수인분당선 지름길</Text>
           <Text style={st.missionText}>선릉까지 환승 직행 가능! (미션 없이 이동, 선릉 도착 후 미션)</Text>
@@ -882,21 +883,19 @@ function Board({ session, onLeave }) {
             <Text style={st.missionText}>
               석방 조건: 다른 모든 팀이 미션 1회씩 성공 — {jp.cleared}/{jp.total}팀 완료
             </Text>
-            {canControl && (
-              <View style={st.row}>
-                <TouchableOpacity
-                  style={[st.ctrlBtn, st.ok, !canRelease && st.disabled]}
-                  onPress={() => canRelease && releaseJail()}>
-                  <Text style={st.btnText}>🔓 석방</Text>
-                </TouchableOpacity>
-              </View>
-            )}
+            <View style={st.row}>
+              <TouchableOpacity
+                style={[st.ctrlBtn, st.ok, !canRelease && st.disabled]}
+                onPress={() => canRelease && releaseJail()}>
+                <Text style={st.btnText}>🔓 석방</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         );
       })()}
 
-      {/* 미션 고르기 / 죽은자의 소생 */}
-      {canControl && myTeam?.pickMode && !myTeam?.pendingMission && !myTeam?.lastRoll && !myTeam?.atShortcut && (
+      {/* 미션 고르기 / 죽은자의 소생 — 아이템 쓴 팀이 직접 선택 */}
+      {myTeam?.pickMode && !myTeam?.pendingMission && !myTeam?.lastRoll && !myTeam?.atShortcut && (
         <View style={st.missionCard}>
           <Text style={st.missionLabel}>
             {myTeam.pickMode === 'done' ? '⚰️ 죽은자의 소생 — 했던 미션 중 선택' : '🤔 미션 고르기'}
@@ -971,11 +970,18 @@ function Board({ session, onLeave }) {
         </View>
       )}
 
-      {/* 참가자: 상점 구경 (구매는 스태프가) */}
+      {/* 참가자 조작: 주사위 + 상점 (도착 등록·판정은 스태프) */}
       {!canControl && myTeam && (
         <View style={st.controls}>
+          <TouchableOpacity
+            style={[st.ctrlBtn, st.ok,
+              (myTeam.lastRoll || myTeam.pendingMission || myTeam.pegasus || myTeam.inJail
+                || myTeam.atShortcut || myTeam.pickMode) && st.disabled]}
+            onPress={roll}>
+            <Text style={st.btnText}>🎲 주사위</Text>
+          </TouchableOpacity>
           <TouchableOpacity style={[st.ctrlBtn, shopOpen && st.ok]} onPress={() => setShopOpen(!shopOpen)}>
-            <Text style={st.btnText}>🛒 상점 구경</Text>
+            <Text style={st.btnText}>🛒 상점</Text>
           </TouchableOpacity>
         </View>
       )}
@@ -997,12 +1003,10 @@ function Board({ session, onLeave }) {
         </View>
       )}
 
-      {/* 상점 (카테고리별) — 참가자는 열람만, 구매는 스태프 */}
+      {/* 상점 (카테고리별) — 팀이 직접 구매 */}
       {shopOpen && myTeam && (
         <View style={st.missionCard}>
-          <Text style={st.missionLabel}>
-            상점 — 보유 🪙 {myTeam.coins || 0}{!canControl ? '  (구매는 스태프에게!)' : ''}
-          </Text>
+          <Text style={st.missionLabel}>상점 — 보유 🪙 {myTeam.coins || 0}</Text>
           <ScrollView style={{ maxHeight: 340 }} nestedScrollEnabled>
             {CATS.map((cat) => (
               <View key={cat.key}>
@@ -1013,13 +1017,11 @@ function Board({ session, onLeave }) {
                       <Text style={st.missionText}>{item.name} — 🪙{item.price}</Text>
                       <Text style={st.shopDesc}>{item.desc}</Text>
                     </View>
-                    {canControl && (
-                      <TouchableOpacity
-                        style={[st.ctrlBtn, st.ok, (myTeam.coins || 0) < item.price && st.disabled]}
-                        onPress={() => buyItem(item)}>
-                        <Text style={st.btnText}>구매</Text>
-                      </TouchableOpacity>
-                    )}
+                    <TouchableOpacity
+                      style={[st.ctrlBtn, st.ok, (myTeam.coins || 0) < item.price && st.disabled]}
+                      onPress={() => buyItem(item)}>
+                      <Text style={st.btnText}>구매</Text>
+                    </TouchableOpacity>
                   </View>
                 ))}
               </View>

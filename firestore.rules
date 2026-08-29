@@ -41,14 +41,18 @@ service cloud.firestore {
 
       match /teams/{t} {
         allow read: if request.auth != null;
-        allow write: if isStaff(g); // 참가자는 읽기 전용 — 코인/위치 조작 차단
+        // 스태프는 전체, 참가자는 자기 팀 문서만 (주사위·구매·자기버프)
+        // 상대 팀을 건드리는 공격 아이템은 여전히 스태프 전용
+        allow write: if isStaff(g)
+          || (request.auth != null && exists(memberDoc(g))
+              && get(memberDoc(g)).data.teamId == t);
       }
       match /log/{l} {
         allow read: if request.auth != null;
-        allow create: if isStaff(g);
+        allow create: if request.auth != null && exists(memberDoc(g)); // 멤버면 기록 가능
       }
-      match /tokens/{t} { // 푸시 토큰: 등록은 본인, 열람은 스태프만
-        allow read: if isStaff(g);
+      match /tokens/{t} { // 푸시 토큰: 등록은 본인, 열람은 멤버 (참가자 구매 알림 발송용)
+        allow read: if request.auth != null && exists(memberDoc(g));
         allow create, update: if request.auth != null;
       }
     }
