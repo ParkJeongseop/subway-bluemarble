@@ -234,7 +234,11 @@ function Entry({ uid, onJoin }) {
 
 function Board({ session, onLeave }) {
   const { width, height } = useWindowDimensions();
-  const boardSize = Math.min(width, height * 0.55); // 정사각 보드, 조작부·로그 공간 확보
+  // 와이드 화면(데스크톱·태블릿 가로): 보드 왼쪽 고정 + 조작부 오른쪽 2컬럼
+  const isWide = width > 900;
+  const boardSize = isWide
+    ? Math.min(height - 140, width * 0.5)
+    : Math.min(width, height * 0.55); // 세로 화면: 정사각 보드, 조작부·로그 공간 확보
   const [teams, setTeams] = useState({});
   const [logs, setLogs] = useState([]);
   const [shopOpen, setShopOpen] = useState(false);
@@ -656,23 +660,8 @@ function Board({ session, onLeave }) {
       `본부 조정: ${t.name} ${field === 'coins' ? `코인 ${value}` : `→ ${STATIONS[value].name}`}`);
   };
 
-  return (
-    <View style={st.root}>
-      <StatusBar style="light" />
-      <View style={st.header}>
-        <View style={{ flex: 1 }}>
-          <Text style={st.title}>2호선 부루마블</Text>
-          <Text style={st.sub}>
-            방 {gameId} · {session.role === 'hq' ? '본부' : `${session.teamId}팀 ${session.role === 'staff' ? '(스태프)' : ''}`}
-          </Text>
-        </View>
-        <TouchableOpacity style={st.leaveBtn} onPress={confirmLeave} hitSlop={8}>
-          <Text style={st.leaveBtnText}>나가기</Text>
-        </TouchableOpacity>
-      </View>
-
-      <ScrollView style={{ flex: 1 }} keyboardShouldPersistTaps="handled">
-      {/* 보드: 역 칸 + 팀 말 */}
+  // 보드: 역 칸 + 팀 말 (세로 화면은 본문 상단, 와이드 화면은 왼쪽 고정)
+  const boardView = (
       <View style={{ width: boardSize, height: boardSize }}>
         {/* 중앙 로고 */}
         <View style={st.boardCenter} pointerEvents="none">
@@ -754,6 +743,28 @@ function Board({ session, onLeave }) {
           );
         })}
       </View>
+  );
+
+  return (
+    <View style={st.root}>
+      <StatusBar style="light" />
+      <View style={st.header}>
+        <View style={{ flex: 1 }}>
+          <Text style={st.title}>2호선 부루마블</Text>
+          <Text style={st.sub}>
+            방 {gameId} · {session.role === 'hq' ? '본부' : `${session.teamId}팀 ${session.role === 'staff' ? '(스태프)' : ''}`}
+          </Text>
+        </View>
+        <TouchableOpacity style={st.leaveBtn} onPress={confirmLeave} hitSlop={8}>
+          <Text style={st.leaveBtnText}>나가기</Text>
+        </TouchableOpacity>
+      </View>
+
+      <View style={{ flex: 1, flexDirection: isWide ? 'row' : 'column' }}>
+      {isWide && <View style={st.sideBoard}>{boardView}</View>}
+      <View style={{ flex: 1 }}>
+      <ScrollView style={{ flex: 1 }} keyboardShouldPersistTaps="handled">
+      {!isWide && boardView}
 
       {/* 골인 순위 (전원) */}
       {ranking.length > 0 && (
@@ -1052,6 +1063,8 @@ function Board({ session, onLeave }) {
           </Text>
         )}
       />
+      </View>
+      </View>
     </View>
   );
 }
@@ -1086,6 +1099,7 @@ const st = StyleSheet.create({
     borderWidth: 1, borderColor: C.panelBorder,
   },
   leaveBtnText: { color: C.subText, fontSize: 13, fontWeight: 'bold' },
+  sideBoard: { padding: 12, justifyContent: 'flex-start' },
   title: { color: C.text, fontSize: 24, fontWeight: 'bold' },
   sub: { color: C.subText, fontSize: 14, marginTop: 2 },
   input: {
