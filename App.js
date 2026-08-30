@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet, useWindowDimensions, FlatList,
-  AppState, Animated, ScrollView, BackHandler, Alert, Platform,
+  AppState, Animated, ScrollView, BackHandler, Alert, Platform, Image,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { StatusBar } from 'expo-status-bar';
@@ -245,7 +245,6 @@ function Board({ session, onLeave }) {
   const [pendingUse, setPendingUse] = useState(null); // 대상팀 선택 대기 중인 아이템 id
   const [pendingPick, setPendingPick] = useState(false); // 지정 주사위 숫자 선택 중
   const [hqMsg, setHqMsg] = useState('');
-  const [quizIdx, setQuizIdx] = useState(null); // 출제 중인 퀴즈 index
   // 주사위 애니메이션: lastRoll이 생기면 숫자 돌리다가 결과에 멈춤
   const [diceFace, setDiceFace] = useState(null); // 표시 중인 눈 (null = 숨김)
   const diceScale = useRef(new Animated.Value(0)).current;
@@ -614,23 +613,23 @@ function Board({ session, onLeave }) {
     }
   };
 
-  // ── 코인 퀴즈 (스태프 출제) ──
-  const drawQuiz = () => {
+  // ── 코인 퀴즈 (스태프 출제 → 문제는 팀 전원 화면에, 정답은 스태프만) ──
+  const drawQuiz = async () => {
     const t = teams[session.teamId];
-    if (!t) return;
+    if (!t || t.activeQuiz != null) return;
     const used = t.usedQuizzes || [];
     const pool = QUIZZES.map((_, i) => i).filter((i) => !used.includes(i));
     if (!pool.length) return; // 퀴즈 소진
-    setQuizIdx(pool[Math.floor(Math.random() * pool.length)]);
+    await updateDoc(teamRef(), { activeQuiz: pool[Math.floor(Math.random() * pool.length)] });
   };
 
   const judgeQuiz = async (correct) => {
     const t = teams[session.teamId];
-    const quiz = QUIZZES[quizIdx];
+    const quiz = QUIZZES[t?.activeQuiz];
     if (!t || !quiz) return;
-    setQuizIdx(null);
     await updateDoc(teamRef(), {
-      usedQuizzes: [...(t.usedQuizzes || []), quizIdx],
+      activeQuiz: null,
+      usedQuizzes: [...(t.usedQuizzes || []), t.activeQuiz],
       ...(correct && { coins: (t.coins || 0) + quiz.coins }),
     });
     await log('quiz', session.teamId,
@@ -986,22 +985,32 @@ function Board({ session, onLeave }) {
         </View>
       )}
 
-      {/* 코인 퀴즈 (스태프 출제 화면 — 정답 포함이므로 스태프만) */}
-      {canControl && quizIdx !== null && (
-        <View style={st.missionCard}>
-          <Text style={st.missionLabel}>코인 퀴즈 — 보상 🪙{QUIZZES[quizIdx].coins}</Text>
-          <Text style={st.missionText}>{QUIZZES[quizIdx].q}</Text>
-          <Text style={st.quizAnswer}>정답: {QUIZZES[quizIdx].a}</Text>
-          <View style={st.row}>
-            <TouchableOpacity style={[st.ctrlBtn, st.ok]} onPress={() => judgeQuiz(true)}>
-              <Text style={st.btnText}>정답 🪙+{QUIZZES[quizIdx].coins}</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={st.ctrlBtn} onPress={() => judgeQuiz(false)}>
-              <Text style={st.btnText}>실패 (통과)</Text>
-            </TouchableOpacity>
+      {/* 코인 퀴즈 — 문제는 팀 전원에게 (그림 포함), 정답·판정은 스태프만 */}
+      {myTeam?.activeQuiz != null && QUIZZES[myTeam.activeQuiz] && (() => {
+        const quiz = QUIZZES[myTeam.activeQuiz];
+        return (
+          <View style={st.missionCard}>
+            <Text style={st.missionLabel}>코인 퀴즈 — 보상 🪙{quiz.coins}</Text>
+            <Text style={st.missionText}>{quiz.q}</Text>
+            {!!quiz.img && <Image source={quiz.img} style={st.quizImg} />}
+            {canControl ? (
+              <>
+                <Text style={st.quizAnswer}>정답: {quiz.a}</Text>
+                <View style={st.row}>
+                  <TouchableOpacity style={[st.ctrlBtn, st.ok]} onPress={() => judgeQuiz(true)}>
+                    <Text style={st.btnText}>정답 🪙+{quiz.coins}</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={st.ctrlBtn} onPress={() => judgeQuiz(false)}>
+                    <Text style={st.btnText}>실패 (통과)</Text>
+                  </TouchableOpacity>
+                </View>
+              </>
+            ) : (
+              <Text style={st.missionLabel}>정답은 스태프에게 외쳐주세요! 🗣️</Text>
+            )}
           </View>
-        </View>
-      )}
+        );
+      })()}
 
       {/* 상점 (카테고리별) — 팀이 직접 구매 */}
       {shopOpen && myTeam && (
@@ -1263,6 +1272,10 @@ const st = StyleSheet.create({
   },
   rankText: { color: '#fff', fontWeight: 'bold', fontSize: 14, textAlign: 'center' },
   quizAnswer: { color: C.greenBright, fontSize: 13, marginTop: 4 },
+  quizImg: {
+    width: '100%', height: 200, marginTop: 8, borderRadius: 8,
+    resizeMode: 'contain', backgroundColor: '#fff',
+  },
   hqInput: {
     flex: 1, backgroundColor: C.bg, color: C.text, borderRadius: 8,
     padding: 10, fontSize: 14, borderWidth: 1, borderColor: C.panelBorder,
