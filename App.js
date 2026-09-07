@@ -245,8 +245,8 @@ function Board({ session, onLeave }) {
   const [pendingUse, setPendingUse] = useState(null); // 대상팀 선택 대기 중인 아이템 id
   const [pendingPick, setPendingPick] = useState(false); // 지정 주사위 숫자 선택 중
   const [hqMsg, setHqMsg] = useState('');
-  // 주사위 애니메이션: lastRoll이 생기면 숫자 돌리다가 결과에 멈춤
-  const [diceFace, setDiceFace] = useState(null); // 표시 중인 눈 (null = 숨김)
+  // 주사위 애니메이션: lastRoll이 생기면 낱개 눈이 각각 돌다가 결과에 멈춤
+  const [diceFaces, setDiceFaces] = useState(null); // 표시 중인 눈 배열 (null = 숨김)
   const diceScale = useRef(new Animated.Value(0)).current;
   const prevRoll = useRef(null);
 
@@ -302,30 +302,33 @@ function Board({ session, onLeave }) {
   const canControl = session.role !== 'player';
   const myTeam = session.teamId && teams[session.teamId];
 
-  // 주사위 연출: lastRoll이 새로 생기면 눈이 돌아가다 결과에 멈춤 (참가자 화면도 동일 재생)
+  // 주사위 연출: lastRoll이 새로 생기면 낱개 눈이 각각 돌아가다 결과에 멈춤 (참가자 화면도 동일 재생)
   const lastRoll = myTeam ? myTeam.lastRoll : null;
   useEffect(() => {
     if (!lastRoll) { prevRoll.current = null; return undefined; }
     if (lastRoll === prevRoll.current) return undefined;
     prevRoll.current = lastRoll;
-    setDiceFace(1);
+    // 낱개 눈 (더블=2개, 트리플=3개). 구버전 데이터엔 lastRolls가 없으니 합계 하나로 폴백
+    const finalFaces = myTeam.lastRolls?.length ? myTeam.lastRolls : [Math.abs(lastRoll)];
+    const n = finalFaces.length;
+    setDiceFaces(Array(n).fill(1));
     diceScale.setValue(0);
     Animated.spring(diceScale, { toValue: 1, friction: 4, useNativeDriver: true }).start();
     let i = 0;
     const iv = setInterval(() => {
       i += 1;
       if (i < 12) {
-        setDiceFace(1 + Math.floor(Math.random() * 6)); // 두구두구
+        setDiceFaces(Array.from({ length: n }, () => 1 + Math.floor(Math.random() * 6))); // 두구두구
       } else {
         clearInterval(iv);
-        setDiceFace(lastRoll); // 결과 (더블/트리플이면 합계)
+        setDiceFaces(finalFaces); // 각 주사위의 실제 눈
         Animated.sequence([
           Animated.timing(diceScale, { toValue: 1.35, duration: 120, useNativeDriver: true }),
           Animated.spring(diceScale, { toValue: 1, friction: 3, useNativeDriver: true }),
         ]).start();
         setTimeout(() => {
           Animated.timing(diceScale, { toValue: 0, duration: 200, useNativeDriver: true })
-            .start(() => setDiceFace(null));
+            .start(() => setDiceFaces(null));
         }, 1600);
       }
     }, 80);
@@ -379,7 +382,7 @@ function Board({ session, onLeave }) {
     }
     if (t.reversed) { value = -Math.abs(value); note += ' (거꾸로 주사위 😵)'; }
     await updateDoc(teamRef(), {
-      lastRoll: value, cursed: false, reversed: false, diceMod: null,
+      lastRoll: value, lastRolls: rolls, cursed: false, reversed: false, diceMod: null,
     });
     await log('roll', session.teamId,
       `${t.name} 주사위 🎲 ${rolls.join('+')}${count > 1 ? ` = ${sum}` : ''}${note}${t.cursed ? ' (저주 😈)' : ''}`);
@@ -392,7 +395,7 @@ function Board({ session, onLeave }) {
     const idx = mine.indexOf('pickDice');
     if (idx < 0) return;
     mine.splice(idx, 1);
-    await updateDoc(teamRef(), { items: mine, lastRoll: n });
+    await updateDoc(teamRef(), { items: mine, lastRoll: n, lastRolls: [n] });
     await log('roll', session.teamId, `${t.name} 지정 주사위 🎯 ${n}`);
   };
 
@@ -734,11 +737,15 @@ function Board({ session, onLeave }) {
             </View>
           );
         })}
-        {/* 주사위 연출 오버레이 */}
-        {diceFace !== null && (
+        {/* 주사위 연출 오버레이 — 더블/트리플이면 주사위를 각각 표시 */}
+        {diceFaces !== null && (
           <View style={st.diceLayer} pointerEvents="none">
-            <Animated.View style={[st.dice, { transform: [{ scale: diceScale }] }]}>
-              <Text style={st.diceNum}>{diceFace}</Text>
+            <Animated.View style={[st.diceRow, { transform: [{ scale: diceScale }] }]}>
+              {diceFaces.map((f, i) => (
+                <View key={i} style={[st.dice, diceFaces.length > 2 && st.diceSmall]}>
+                  <Text style={[st.diceNum, diceFaces.length > 2 && st.diceNumSmall]}>{f}</Text>
+                </View>
+              ))}
             </Animated.View>
           </View>
         )}
@@ -1237,6 +1244,9 @@ const st = StyleSheet.create({
     position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
     justifyContent: 'center', alignItems: 'center', zIndex: 10,
   },
+  diceRow: { flexDirection: 'row', gap: 12 },
+  diceSmall: { width: 68, height: 68, borderRadius: 16 },
+  diceNumSmall: { fontSize: 34 },
   dice: {
     width: 88, height: 88, borderRadius: 20, backgroundColor: '#fff',
     justifyContent: 'center', alignItems: 'center',
