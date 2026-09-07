@@ -856,7 +856,8 @@ function Board({ session, onLeave }) {
           {(myTeam.items || []).map((id, i) => (
             <TouchableOpacity
               key={`${id}-${i}`} style={st.invChip}
-              disabled={!canControl && !!itemById(id)?.target} // 공격(대상 지정)만 스태프 전용
+              // 상대 팀을 건드리는 아이템(공격·자석)은 스태프 전용
+              disabled={!canControl && (!!itemById(id)?.target || id === 'magnet')}
               onPress={() => {
                 const item = itemById(id);
                 if (id === 'pickDice') setPendingPick(true);
