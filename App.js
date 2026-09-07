@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import {
-  View, Text, TextInput, TouchableOpacity, StyleSheet, useWindowDimensions, FlatList,
+  View, Text, TextInput, TouchableOpacity, StyleSheet, useWindowDimensions,
   AppState, Animated, ScrollView, BackHandler, Alert, Platform, Image,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -238,7 +238,7 @@ function Board({ session, onLeave }) {
   const isWide = width > 900;
   const boardSize = isWide
     ? Math.min(height - 140, width * 0.5)
-    : Math.min(width, height * 0.55); // 세로 화면: 정사각 보드, 조작부·로그 공간 확보
+    : Math.min(width, height * 0.45); // 세로 화면: 상단 절반 보드 고정, 하단 조작부·로그
   const [teams, setTeams] = useState({});
   const [logs, setLogs] = useState([]);
   const [shopOpen, setShopOpen] = useState(false);
@@ -759,11 +759,13 @@ function Board({ session, onLeave }) {
         </TouchableOpacity>
       </View>
 
+      {/* 세로 화면: 보드는 상단 고정 (스크롤과 무관하게 항상 표시) */}
+      {!isWide && <View style={{ alignItems: 'center' }}>{boardView}</View>}
+
       <View style={{ flex: 1, flexDirection: isWide ? 'row' : 'column' }}>
       {isWide && <View style={st.sideBoard}>{boardView}</View>}
       <View style={{ flex: 1 }}>
       <ScrollView style={{ flex: 1 }} keyboardShouldPersistTaps="handled">
-      {!isWide && boardView}
 
       {/* 골인 순위 (전원) */}
       {ranking.length > 0 && (
@@ -1086,19 +1088,17 @@ function Board({ session, onLeave }) {
         </View>
       )}
 
-      </ScrollView>
-
-      {/* 실시간 알림 (하단 고정) */}
-      <FlatList
-        style={st.log} data={logs} keyExtractor={(l) => l.id}
-        renderItem={({ item }) => (
-          <Text style={[st.logLine, item.type === 'broadcast' && st.broadcastLine]}>
+      {/* 실시간 알림 — 버튼·카드와 같은 스크롤 안에 이어서 표시 */}
+      <View style={st.log}>
+        {logs.map((item) => (
+          <Text key={item.id} style={[st.logLine, item.type === 'broadcast' && st.broadcastLine]}>
             <Text style={{ color: TEAM_COLORS[item.teamId] || '#aaa' }}>
               [{item.teamId === 'HQ' ? '본부' : `${item.teamId}팀`}] </Text>
             {item.message}
           </Text>
-        )}
-      />
+        ))}
+      </View>
+      </ScrollView>
       </View>
       </View>
     </View>
@@ -1261,7 +1261,7 @@ const st = StyleSheet.create({
     borderTopWidth: 1, borderTopColor: C.panelBorder, paddingVertical: 6,
   },
   log: {
-    height: 140, marginTop: 8, paddingHorizontal: 16,
+    marginTop: 8, paddingHorizontal: 16, paddingBottom: 24,
     borderTopWidth: 1, borderTopColor: C.panelBorder,
   },
   logLine: { color: '#cfe6d4', fontSize: 13, paddingVertical: 3 },
