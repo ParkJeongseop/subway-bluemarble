@@ -336,6 +336,12 @@ function Board({ session, onLeave }) {
   const move = async (delta) => {
     const t = teams[session.teamId];
     if (!t) return;
+    if (t.onShortcut) { // 지름길 위 보정
+      const sp = Math.max(0, Math.min(SHORTCUT_LEN - 1, (t.shortcutPos || 0) + delta));
+      await updateDoc(teamRef(), { shortcutPos: sp });
+      await log('move', session.teamId, `${t.name} → ${shortcutName(sp)} (지름길 보정)`);
+      return;
+    }
     const pos = Math.max(0, Math.min(FINISH, t.position + delta));
     const finished = pos === FINISH && !t.finishedAt; // 페가수스 도착 경로 포함
     await updateDoc(teamRef(), {
@@ -393,6 +399,30 @@ function Board({ session, onLeave }) {
   const arrive = async () => {
     const t = teams[session.teamId];
     if (!t || !t.lastRoll) return;
+    // 지름길 경로 위 이동: 5 이상이면 선릉 도착(+미션), 0 이하로 후진하면 왕십리 복귀
+    if (t.onShortcut) {
+      const sp = (t.shortcutPos || 0) + t.lastRoll;
+      if (sp >= SHORTCUT_LEN) {
+        const mission = drawMission(t, STATIONS[SEOLLEUNG].name);
+        await updateDoc(teamRef(), {
+          lastRoll: null, onShortcut: null, shortcutPos: null,
+          position: SEOLLEUNG, pendingMission: mission,
+        });
+        await log('move', session.teamId,
+          `${t.name} → 선릉 도착 🚇 지름길 완주!${mission ? ` / 미션: ${mission}` : ''}`);
+        if (mission) sendPush(gameId, session.teamId, '📋 선릉 미션', mission);
+      } else if (sp <= 0) {
+        await updateDoc(teamRef(), {
+          lastRoll: null, onShortcut: null, shortcutPos: null, position: WANGSIMNI,
+        });
+        await log('move', session.teamId, `${t.name} → 왕십리로 복귀 (지름길 이탈)`);
+      } else {
+        await updateDoc(teamRef(), { lastRoll: null, shortcutPos: sp });
+        await log('move', session.teamId,
+          `${t.name} → ${shortcutName(sp)} 도착 (지름길 ${sp}/${SHORTCUT_LEN} — 미션 없음)`);
+      }
+      return;
+    }
     const pos = Math.max(0, Math.min(FINISH, t.position + t.lastRoll));
     const station = STATIONS[pos].name;
     const finished = pos === FINISH;
@@ -440,16 +470,22 @@ function Board({ session, onLeave }) {
     await log('mission', session.teamId, `${t.name} 미션 선택: ${m}`);
   };
 
-  // 지름길 선택
+  // 지름길: 수인분당선 5칸 경로 (왕십리 →서울숲→압구정로데오→강남구청→선정릉→ 선릉)
+  // 진입 후에도 주사위로 이동. shortcutPos 0=왕십리, 1~4=경유역, 5+=선릉 도착
+  const SHORTCUT_LEN = SHORTCUT_STATIONS.length + 1; // 5
+  const shortcutName = (pos) =>
+    (pos <= 0 ? STATIONS[WANGSIMNI].name
+      : pos >= SHORTCUT_LEN ? STATIONS[SEOLLEUNG].name
+      : SHORTCUT_STATIONS[pos - 1].replace('\n', ''));
+
   const takeShortcut = async (yes) => {
     const t = teams[session.teamId];
     if (!t || !t.atShortcut) return;
     if (yes) {
-      const mission = drawMission(t, STATIONS[SEOLLEUNG].name);
-      await updateDoc(teamRef(), { atShortcut: false, position: SEOLLEUNG, pendingMission: mission });
+      await updateDoc(teamRef(), { atShortcut: false, onShortcut: true, shortcutPos: 0 });
       await log('move', session.teamId,
-        `${t.name} 🚇 지름길! 수인분당선 환승 → 선릉 (도착 후 미션: ${mission})`);
-      sendPush(gameId, 'all', '🚇 지름길!', `${t.name}이 왕십리→선릉 지름길을 탔습니다!`);
+        `${t.name} 🚇 수인분당선 환승! 지름길 진입 (주사위로 선릉까지 이동)`);
+      sendPush(gameId, 'all', '🚇 지름길!', `${t.name}이 왕십리→선릉 지름길에 진입했습니다!`);
     } else {
       const mission = drawMission(t, STATIONS[WANGSIMNI].name);
       await updateDoc(teamRef(), { atShortcut: false, pendingMission: mission });
@@ -534,7 +570,7 @@ function Board({ session, onLeave }) {
     // 자석: 대상 자동 지정 (말판에서 바로 앞에 있는 팀, 페가수스 제외)
     if (itemId === 'magnet') {
       const ahead = Object.entries(teams)
-        .filter(([id, tt]) => id !== session.teamId && !tt.pegasus && tt.position > t.position)
+        .filter(([id, tt]) => id !== session.teamId && !tt.pegasus && !tt.onShortcut && tt.position > t.position)
         .sort((a, b) => a[1].position - b[1].position)[0];
       if (!ahead) { await log('item', session.teamId, `${t.name} 자석 실패 — 앞에 팀이 없음 (아이템 유지)`); return; }
       targetId = ahead[0];
@@ -708,7 +744,7 @@ function Board({ session, onLeave }) {
         )}
         {STATIONS.map((s) => {
           const special = s.index === 0 || s.index === FINISH;
-          const targetIdx = myTeam?.lastRoll
+          const targetIdx = myTeam?.lastRoll && !myTeam.onShortcut
             ? Math.max(0, Math.min(FINISH, myTeam.position + myTeam.lastRoll)) : null;
           return (
             <View key={s.index} style={[
@@ -730,11 +766,22 @@ function Board({ session, onLeave }) {
           );
         })}
         {Object.entries(teams).map(([id, t], i) => {
-          const s = STATIONS[t.position] || STATIONS[0];
+          // 지름길 위 팀은 왕십리~선릉 사이 경로 좌표에 표시
+          let px; let py;
+          if (t.onShortcut) {
+            const a = STATIONS[WANGSIMNI];
+            const b = STATIONS[SEOLLEUNG];
+            const frac = (t.shortcutPos || 0) / (SHORTCUT_STATIONS.length + 1);
+            px = a.x + (b.x - a.x) * frac;
+            py = a.y + (b.y - a.y) * frac;
+          } else {
+            const s = STATIONS[t.position] || STATIONS[0];
+            px = s.x; py = s.y;
+          }
           return (
             <View key={id} style={[st.pin, {
-              left: s.x * boardSize - 9 + (i % 3) * 8,
-              top: s.y * boardSize - 34 - Math.floor(i / 3) * 6,
+              left: px * boardSize - 9 + (i % 3) * 8,
+              top: py * boardSize - 34 - Math.floor(i / 3) * 6,
               backgroundColor: TEAM_COLORS[id] || '#888',
             }]}>
               <Text style={st.pinText}>{id}</Text>
@@ -779,7 +826,9 @@ function Board({ session, onLeave }) {
       {/* 팀 상태 + 현재 미션 (참가자·스태프 공통) */}
       {myTeam && (
         <View style={st.statusRow}>
-          <Text style={st.pos}>{STATIONS[myTeam.position].name}</Text>
+          <Text style={st.pos}>
+            {myTeam.onShortcut ? `🚇 ${shortcutName(myTeam.shortcutPos || 0)} (지름길)` : STATIONS[myTeam.position].name}
+          </Text>
           <Text style={st.coin}>🪙 {myTeam.coins || 0}</Text>
           {myTeam.pegasus && <Text style={st.coin}>🐴 강남 직행 중</Text>}
           {myTeam.inJail && <Text style={st.coin}>🔒 감옥</Text>}
@@ -793,7 +842,9 @@ function Board({ session, onLeave }) {
           </Text>}
           {!!myTeam.lastRoll && (
             <Text style={st.coin}>
-              🎲 {myTeam.lastRoll} → {STATIONS[Math.max(0, Math.min(FINISH, myTeam.position + myTeam.lastRoll))].name}
+              🎲 {myTeam.lastRoll} → {myTeam.onShortcut
+                ? shortcutName((myTeam.shortcutPos || 0) + myTeam.lastRoll)
+                : STATIONS[Math.max(0, Math.min(FINISH, myTeam.position + myTeam.lastRoll))].name}
             </Text>
           )}
         </View>
@@ -826,7 +877,8 @@ function Board({ session, onLeave }) {
             {Object.entries(teams)
               .filter(([id, tt]) => id !== session.teamId
                 && (pendingUse === 'pegasusDrop' ? tt.pegasus
-                  : !(IS_ATTACK.has(pendingUse) && tt.pegasus)))
+                  : !(IS_ATTACK.has(pendingUse) && tt.pegasus))
+                && !(['pull3', 'pull5'].includes(pendingUse) && tt.onShortcut))
               .map(([id]) => (
                 <TouchableOpacity key={id} style={[st.ctrlBtn, { backgroundColor: TEAM_COLORS[id] }]}
                   onPress={() => { useItem(pendingUse, id); setPendingUse(null); }}>
@@ -862,7 +914,9 @@ function Board({ session, onLeave }) {
       {myTeam?.atShortcut && (
         <View style={st.missionCard}>
           <Text style={st.missionLabel}>🚇 왕십리 — 수인분당선 지름길</Text>
-          <Text style={st.missionText}>선릉까지 환승 직행 가능! (미션 없이 이동, 선릉 도착 후 미션)</Text>
+          <Text style={st.missionText}>
+            수인분당선으로 환승! 지름길에서도 주사위로 이동 (5칸, 경유역 미션 없음 · 선릉 도착 시 미션)
+          </Text>
           <View style={st.row}>
             <TouchableOpacity style={[st.ctrlBtn, st.ok]} onPress={() => takeShortcut(true)}>
               <Text style={st.btnText}>🚇 지름길 타기</Text>
