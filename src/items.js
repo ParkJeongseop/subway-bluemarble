@@ -47,7 +47,7 @@ export const ITEMS = [
   { id: 'magnet', name: '🧲 자석', price: 20, cat: 'attack', target: false,
     desc: '말판에서 바로 앞에 있는 팀을 내 위치까지 끌어옴 (거리 무제한, 자동 지정)' },
   // ── 기타 ──
-  { id: 'slot', name: '🎰 슬롯머신', price: 10, cat: 'etc', target: false,
+  { id: 'slot', name: '🎰 슬롯머신', price: 1, cat: 'etc', target: false,
     desc: '주사위 짝수: 보유 코인 200% / 홀수: 보유 코인 50%' },
   { id: 'americano', name: '☕ 아메리카노', price: 30, cat: 'etc', target: false,
     desc: '다음 역에서 스태프가 커피 한 잔씩 사줌' },
