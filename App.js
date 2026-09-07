@@ -3,7 +3,7 @@ import {
   View, Text, TextInput, TouchableOpacity, StyleSheet, useWindowDimensions,
   AppState, Animated, ScrollView, BackHandler, Alert, Platform, Image,
 } from 'react-native';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { storage as AsyncStorage } from './src/storage';
 import { StatusBar } from 'expo-status-bar';
 import {
   collection, doc, onSnapshot, setDoc, getDoc, updateDoc, addDoc, serverTimestamp,

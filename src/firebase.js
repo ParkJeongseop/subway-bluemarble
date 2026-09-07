@@ -2,7 +2,7 @@
 import { initializeApp } from 'firebase/app';
 import { getFirestore } from 'firebase/firestore';
 import * as fbAuth from 'firebase/auth';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import AsyncStorage from './storage';
 
 const { signInAnonymously, onAuthStateChanged } = fbAuth;
 
@@ -18,8 +18,9 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app);
 // uid 영속화: 앱을 껐다 켜도 같은 익명 계정 유지 (HQ/스태프 재입장에 필수)
-// RN 번들에서만 getReactNativePersistence가 존재 — 웹(react-native-web)은 기본 영속 사용
-export const auth = fbAuth.getReactNativePersistence
+// RN 번들에서만 getReactNativePersistence 존재. AsyncStorage 네이티브가 없는
+// 구버전 빌드(1.0.0)나 웹은 기본(메모리/브라우저) 영속으로 폴백
+export const auth = (fbAuth.getReactNativePersistence && AsyncStorage)
   ? fbAuth.initializeAuth(app, {
     persistence: fbAuth.getReactNativePersistence(AsyncStorage),
   })
