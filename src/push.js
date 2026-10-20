@@ -57,17 +57,27 @@ export async function sendPush(gameId, teamId, title, body) {
   }
 }
 
-// 포그라운드 복귀 시 OTA 업데이트 즉시 적용 — 네이티브 전용
-export async function applyUpdateIfAny() {
-  if (Platform.OS === 'web' || __DEV__) return;
+// OTA: 새 업데이트가 있으면 다운로드만 하고 true 반환 (적용은 호출측이 reloadApp으로)
+export async function fetchUpdateIfAny() {
+  if (Platform.OS === 'web' || __DEV__) return false;
   try {
     const Updates = await import('expo-updates');
     const { isAvailable } = await Updates.checkForUpdateAsync();
-    if (isAvailable) {
-      await Updates.fetchUpdateAsync();
-      await Updates.reloadAsync();
-    }
+    if (!isAvailable) return false;
+    await Updates.fetchUpdateAsync();
+    return true;
   } catch (e) {
     console.log('update check failed:', e.message);
+    return false;
+  }
+}
+
+// 받아둔 OTA를 즉시 적용 (JS 리로드 — 세션은 AsyncStorage, 게임 상태는 Firestore라 안전)
+export async function reloadApp() {
+  try {
+    const Updates = await import('expo-updates');
+    await Updates.reloadAsync();
+  } catch (e) {
+    console.log('reload failed:', e.message);
   }
 }

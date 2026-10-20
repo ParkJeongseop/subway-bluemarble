@@ -3,7 +3,7 @@ import {
   View, Text, TextInput, TouchableOpacity, StyleSheet, useWindowDimensions,
   AppState, Animated, ScrollView, BackHandler, Alert, Platform, Image,
 } from 'react-native';
-import { storage as AsyncStorage } from './src/storage';
+import { storage as AsyncStorage, hasStorage } from './src/storage';
 import { StatusBar } from 'expo-status-bar';
 import {
   collection, doc, onSnapshot, setDoc, getDoc, updateDoc, addDoc, serverTimestamp,
@@ -15,7 +15,7 @@ import {
 } from './src/stations';
 import { RANDOM_MISSIONS, STATION_MISSIONS } from './src/missions';
 import { ITEMS, itemById, IS_ATTACK, CATS } from './src/items';
-import { registerPush, sendPush, applyUpdateIfAny } from './src/push';
+import { registerPush, sendPush, fetchUpdateIfAny, reloadApp } from './src/push';
 import { QUIZZES } from './src/quiz';
 
 const teamsCol = (gameId) => collection(db, 'games', gameId, 'teams');
@@ -30,7 +30,21 @@ export default function App() {
   const [uid, setUid] = useState(null);
   const [session, setSession] = useState(null); // { gameId, role, teamId }
   const [restoring, setRestoring] = useState(true);
+  const [updateReady, setUpdateReady] = useState(false);
   useEffect(() => ensureAuth(setUid), []);
+
+  // OTA: 앱을 켜둔 채로도 2분마다 + 포그라운드 복귀 시 체크.
+  // 세션이 기기에 저장되는 빌드는 즉시 리로드(같은 방으로 복귀), 아니면 배너로 안내.
+  useEffect(() => {
+    const check = async () => {
+      if (!(await fetchUpdateIfAny())) return;
+      if (hasStorage) reloadApp(); else setUpdateReady(true);
+    };
+    check();
+    const iv = setInterval(check, 120000);
+    const sub = AppState.addEventListener('change', (s) => { if (s === 'active') check(); });
+    return () => { clearInterval(iv); sub.remove(); };
+  }, []);
 
   // 마지막 세션 복원: 앱을 껐다 켜도 방으로 자동 복귀
   useEffect(() => {
@@ -63,9 +77,18 @@ export default function App() {
       </View>
     );
   }
-  return session
-    ? <Board session={session} uid={uid} onLeave={leave} />
-    : <Entry uid={uid} onJoin={join} />;
+  return (
+    <>
+      {updateReady && (
+        <TouchableOpacity style={st.updateBanner} onPress={reloadApp}>
+          <Text style={st.updateBannerText}>🆕 새 버전 준비됨 — 탭하여 적용 (방 코드로 다시 입장)</Text>
+        </TouchableOpacity>
+      )}
+      {session
+        ? <Board session={session} uid={uid} onLeave={leave} />
+        : <Entry uid={uid} onJoin={join} />}
+    </>
+  );
 }
 
 function Entry({ uid, onJoin }) {
@@ -271,14 +294,6 @@ function Board({ session, onLeave }) {
       (snap) => setLogs(snap.docs.map((d) => ({ id: d.id, ...d.data() }))));
     return () => { u1(); u2(); };
   }, [gameId]);
-
-  // 포그라운드 복귀 시 OTA 업데이트 즉시 적용
-  useEffect(() => {
-    const sub = AppState.addEventListener('change', (s) => {
-      if (s === 'active') applyUpdateIfAny();
-    });
-    return () => sub.remove();
-  }, []);
 
   // Android 뒤로가기 = 방 나가기 확인 (실수로 앱 종료 방지)
   const confirmLeave = () => {
@@ -1197,6 +1212,10 @@ const st = StyleSheet.create({
     borderWidth: 1, borderColor: C.panelBorder,
   },
   leaveBtnText: { color: C.subText, fontSize: 13, fontWeight: 'bold' },
+  updateBanner: {
+    backgroundColor: C.gold, paddingVertical: 10, paddingHorizontal: 16, paddingTop: 48,
+  },
+  updateBannerText: { color: '#1d2b22', fontWeight: 'bold', textAlign: 'center', fontSize: 14 },
   sideBoard: { padding: 12, justifyContent: 'flex-start' },
   title: { color: C.text, fontSize: 24, fontWeight: 'bold' },
   sub: { color: C.subText, fontSize: 14, marginTop: 2 },
