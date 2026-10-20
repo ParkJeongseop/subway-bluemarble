@@ -42,4 +42,4 @@ yarn-error.*
 
 fcm-service-account.json
 
-store/app-release.aab
+store/*.aab
