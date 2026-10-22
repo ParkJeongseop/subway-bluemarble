@@ -13,10 +13,11 @@ import { db, ensureAuth } from './src/firebase';
 import {
   STATIONS, FINISH, WANGSIMNI, SEOLLEUNG, JAIL, SHORTCUT_STATIONS, TEAM_COLORS,
 } from './src/stations';
-import { RANDOM_MISSIONS, STATION_MISSIONS } from './src/missions';
+import { RANDOM_MISSIONS, STATION_MISSIONS, STEAL } from './src/missions';
 import { ITEMS, itemById, IS_ATTACK, CATS } from './src/items';
 import { registerPush, sendPush, fetchUpdateIfAny, reloadApp } from './src/push';
 import { QUIZZES } from './src/quiz';
+import { PERSONS } from './src/person';
 
 const teamsCol = (gameId) => collection(db, 'games', gameId, 'teams');
 const logCol = (gameId) => collection(db, 'games', gameId, 'log');
@@ -537,8 +538,22 @@ function Board({ session, onLeave }) {
         await updateDoc(teamRef(), { pendingMission: next, doneMissions: done, extraMission: false });
         await log('mission', session.teamId, `${t.name} 미션 성공 ✅ — 미션 1개 더! ${next}`);
       } else {
-        await updateDoc(teamRef(), { pendingMission: null, doneMissions: done });
-        await log('mission', session.teamId, `${t.name} 미션 성공 ✅`);
+        const steal = STEAL[t.pendingMission];
+        const update = { pendingMission: null, doneMissions: done };
+        if (steal?.pick) update.stealPending = steal.pick; // 대상 팀은 stealFrom으로 선택
+        if (steal?.all) {
+          // 모든 팀에서 n코인씩: 상대는 보유분만큼만 뺏김
+          let got = 0;
+          for (const [id, tt] of Object.entries(teams)) {
+            if (id === session.teamId) continue;
+            const take = Math.min(steal.all, tt.coins || 0);
+            got += take;
+            await updateDoc(doc(teamsCol(gameId), id), { coins: (tt.coins || 0) - take });
+          }
+          update.coins = (t.coins || 0) + got;
+        }
+        await updateDoc(teamRef(), update);
+        await log('mission', session.teamId, `${t.name} 미션 성공 ✅${steal?.all ? ` — 전 팀에서 🪙${steal.all}씩 강탈` : ''}`);
       }
     } else {
       // 다시 뽑기: 현재 미션 제외 (특정역 미션은 재뽑기 없이 유지)
@@ -668,18 +683,27 @@ function Board({ session, onLeave }) {
   };
 
   // ── 코인 퀴즈 (스태프 출제 → 문제는 팀 전원 화면에, 정답은 스태프만) ──
-  const drawQuiz = async () => {
+  // activeQuiz 키: 숫자 = QUIZZES 인덱스, 'p12' = 인물 퀴즈 12번 (정답 텍스트 없음 → 스태프 구두 판정)
+  const getQuiz = (key) => {
+    if (typeof key === 'string' && key[0] === 'p') {
+      const img = PERSONS[+key.slice(1)];
+      return img && { q: '이 사람은 누구일까요? 👤', a: '(정답 리스트 없음 — 스태프가 보고 판정)', coins: 10, img };
+    }
+    return QUIZZES[key];
+  };
+  const drawQuiz = async (kind = 'quiz') => {
     const t = teams[session.teamId];
     if (!t || t.activeQuiz != null) return;
     const used = t.usedQuizzes || [];
-    const pool = QUIZZES.map((_, i) => i).filter((i) => !used.includes(i));
+    const all = kind === 'person' ? PERSONS.map((_, i) => `p${i}`) : QUIZZES.map((_, i) => i);
+    const pool = all.filter((i) => !used.includes(i));
     if (!pool.length) return; // 퀴즈 소진
     await updateDoc(teamRef(), { activeQuiz: pool[Math.floor(Math.random() * pool.length)] });
   };
 
   const judgeQuiz = async (correct) => {
     const t = teams[session.teamId];
-    const quiz = QUIZZES[t?.activeQuiz];
+    const quiz = getQuiz(t?.activeQuiz);
     if (!t || !quiz) return;
     await updateDoc(teamRef(), {
       activeQuiz: null,
@@ -688,6 +712,17 @@ function Board({ session, onLeave }) {
     });
     await log('quiz', session.teamId,
       correct ? `${t.name} 퀴즈 정답! 코인 +${quiz.coins}` : `${t.name} 퀴즈 실패 (통과)`);
+  };
+
+  // 미션 '지정한 팀한테 N코인 뺏기': 스태프가 대상 선택
+  const stealFrom = async (targetId) => {
+    const t = teams[session.teamId]; const target = teams[targetId];
+    if (!t || !target || !t.stealPending) return;
+    const take = Math.min(t.stealPending, target.coins || 0);
+    await updateDoc(doc(teamsCol(gameId), targetId), { coins: (target.coins || 0) - take });
+    await updateDoc(teamRef(), { coins: (t.coins || 0) + take, stealPending: null });
+    await log('mission', session.teamId, `${t.name} → ${target.name}에게서 🪙${take} 강탈!`);
+    sendPush(gameId, targetId, '💸 코인 강탈!', `${t.name}이(가) 코인 ${take}개를 가져갔어요`);
   };
 
   // 골인 순위: finishedAt 순
@@ -990,6 +1025,20 @@ function Board({ session, onLeave }) {
           </ScrollView>
         </View>
       )}
+      {!!myTeam?.stealPending && (
+        <View style={st.missionCard}>
+          <Text style={st.missionLabel}>💸 어느 팀에서 🪙{myTeam.stealPending} 뺏어올까요?</Text>
+          {canControl ? (
+            <View style={st.row}>
+              {Object.entries(teams).filter(([id]) => id !== session.teamId).map(([id, t]) => (
+                <TouchableOpacity key={id} style={st.ctrlBtn} onPress={() => stealFrom(id)}>
+                  <Text style={[st.btnText, { color: TEAM_COLORS[id] }]}>{id}팀 🪙{t.coins || 0}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          ) : <Text style={st.missionLabel}>스태프에게 팀을 말해주세요!</Text>}
+        </View>
+      )}
       {myTeam?.pendingMission && (
         <View style={st.missionCard}>
           <Text style={st.missionLabel}>현재 미션</Text>
@@ -1042,8 +1091,11 @@ function Board({ session, onLeave }) {
           <TouchableOpacity style={[st.ctrlBtn, shopOpen && st.ok]} onPress={() => setShopOpen(!shopOpen)}>
             <Text style={st.btnText}>🛒 상점</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={st.ctrlBtn} onPress={drawQuiz}>
+          <TouchableOpacity style={st.ctrlBtn} onPress={() => drawQuiz()}>
             <Text style={st.btnText}>❓ 퀴즈</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={st.ctrlBtn} onPress={() => drawQuiz('person')}>
+            <Text style={st.btnText}>👤 인물</Text>
           </TouchableOpacity>
         </View>
       )}
@@ -1065,8 +1117,8 @@ function Board({ session, onLeave }) {
       )}
 
       {/* 코인 퀴즈 — 문제는 팀 전원에게 (그림 포함), 정답·판정은 스태프만 */}
-      {myTeam?.activeQuiz != null && QUIZZES[myTeam.activeQuiz] && (() => {
-        const quiz = QUIZZES[myTeam.activeQuiz];
+      {myTeam?.activeQuiz != null && getQuiz(myTeam.activeQuiz) && (() => {
+        const quiz = getQuiz(myTeam.activeQuiz);
         return (
           <View style={st.missionCard}>
             <Text style={st.missionLabel}>코인 퀴즈 — 보상 🪙{quiz.coins}</Text>
