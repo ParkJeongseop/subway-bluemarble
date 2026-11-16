@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet, useWindowDimensions,
-  AppState, Animated, ScrollView, BackHandler, Alert, Platform, Image,
+  AppState, Animated, ScrollView, BackHandler, Alert, Platform, Image, Modal,
 } from 'react-native';
 import { storage as AsyncStorage, hasStorage } from './src/storage';
 import { StatusBar } from 'expo-status-bar';
@@ -436,9 +436,22 @@ function Board({ session, onLeave }) {
         });
         await log('move', session.teamId, `${t.name} → 왕십리로 복귀 (지름길 이탈)`);
       } else {
-        await updateDoc(teamRef(), { lastRoll: null, shortcutPos: sp });
-        await log('move', session.teamId,
-          `${t.name} → ${shortcutName(sp)} 도착 (지름길 ${sp}/${SHORTCUT_LEN} — 미션 없음)`);
+        // 경유역 도착: 일반 역과 동일하게 도착 미션 (후진·면제권·미션 고르기 규칙도 동일)
+        const name = shortcutName(sp);
+        const update = { lastRoll: null, shortcutPos: sp };
+        let msg = `${t.name} → ${name} 도착 (지름길 ${sp}/${SHORTCUT_LEN})`;
+        let mission = null;
+        if (t.lastRoll < 0) msg += ' (후진 — 미션 없음)';
+        else if (t.skipNextMission) { update.skipNextMission = false; msg += ' — 미션 면제 🎫'; }
+        else if (t.pickMode) msg += ' — 미션 고르는 중 🤔';
+        else {
+          mission = drawMission(t, name);
+          update.pendingMission = mission;
+          if (mission) msg += ` / 미션: ${mission}`;
+        }
+        await updateDoc(teamRef(), update);
+        await log('move', session.teamId, msg);
+        if (mission) sendPush(gameId, session.teamId, `📋 ${name} 미션`, mission);
       }
       return;
     }
@@ -490,7 +503,7 @@ function Board({ session, onLeave }) {
   };
 
   // 지름길: 수인분당선 5칸 경로 (왕십리 →서울숲→압구정로데오→강남구청→선정릉→ 선릉)
-  // 진입 후에도 주사위로 이동. shortcutPos 0=왕십리, 1~4=경유역, 5+=선릉 도착
+  // 진입 후에도 주사위로 이동. shortcutPos 0=왕십리, 1~4=경유역(도착 미션 있음), 5+=선릉 도착
   const SHORTCUT_LEN = SHORTCUT_STATIONS.length + 1; // 5
   const shortcutName = (pos) =>
     (pos <= 0 ? STATIONS[WANGSIMNI].name
@@ -973,7 +986,7 @@ function Board({ session, onLeave }) {
         <View style={st.missionCard}>
           <Text style={st.missionLabel}>🚇 왕십리 — 수인분당선 지름길</Text>
           <Text style={st.missionText}>
-            수인분당선으로 환승! 지름길에서도 주사위로 이동 (5칸, 경유역 미션 없음 · 선릉 도착 시 미션)
+            수인분당선으로 환승! 지름길에서도 주사위로 이동 (5칸, 경유역마다 도착 미션)
           </Text>
           <View style={st.row}>
             <TouchableOpacity style={[st.ctrlBtn, st.ok]} onPress={() => takeShortcut(true)}>
@@ -1143,11 +1156,18 @@ function Board({ session, onLeave }) {
         );
       })()}
 
-      {/* 상점 (카테고리별) — 팀이 직접 구매 */}
-      {shopOpen && myTeam && (
-        <View style={st.missionCard}>
-          <Text style={st.missionLabel}>상점 — 보유 🪙 {myTeam.coins || 0}</Text>
-          <ScrollView style={{ maxHeight: 340 }} nestedScrollEnabled>
+      {/* 상점 (카테고리별) — 팀이 직접 구매. 지도 위 모달로 띄움 (뒤로가기·바깥 탭으로 닫힘) */}
+      <Modal visible={shopOpen && !!myTeam} transparent animationType="fade"
+        onRequestClose={() => setShopOpen(false)}>
+        <TouchableOpacity style={st.modalBg} activeOpacity={1} onPress={() => setShopOpen(false)}>
+        <TouchableOpacity style={st.modalCard} activeOpacity={1}>
+          <View style={st.modalHeader}>
+            <Text style={st.missionText}>🛒 상점 — 보유 🪙 {myTeam?.coins || 0}</Text>
+            <TouchableOpacity style={st.ctrlBtn} onPress={() => setShopOpen(false)}>
+              <Text style={st.btnText}>닫기 ✕</Text>
+            </TouchableOpacity>
+          </View>
+          <ScrollView>
             {CATS.map((cat) => (
               <View key={cat.key}>
                 <Text style={st.shopCat}>{cat.label}</Text>
@@ -1158,7 +1178,7 @@ function Board({ session, onLeave }) {
                       <Text style={st.shopDesc}>{item.desc}</Text>
                     </View>
                     <TouchableOpacity
-                      style={[st.ctrlBtn, st.ok, (myTeam.coins || 0) < item.price && st.disabled]}
+                      style={[st.ctrlBtn, st.ok, (myTeam?.coins || 0) < item.price && st.disabled]}
                       onPress={() => buyItem(item)}>
                       <Text style={st.btnText}>구매</Text>
                     </TouchableOpacity>
@@ -1167,8 +1187,9 @@ function Board({ session, onLeave }) {
               </View>
             ))}
           </ScrollView>
-        </View>
-      )}
+        </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
 
       {/* 본부 패널 */}
       {session.role === 'hq' && (
@@ -1373,6 +1394,16 @@ const st = StyleSheet.create({
   statusRow: {
     flexDirection: 'row', gap: 16, alignItems: 'center',
     paddingHorizontal: 16, paddingTop: 4,
+  },
+  modalBg: {
+    flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', padding: 16,
+  },
+  modalCard: {
+    backgroundColor: C.panel, borderRadius: 14, padding: 12, maxHeight: '85%',
+    width: '100%', maxWidth: 560, alignSelf: 'center',
+  },
+  modalHeader: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8,
   },
   missionCard: {
     backgroundColor: C.panel, borderRadius: 12, padding: 12,
