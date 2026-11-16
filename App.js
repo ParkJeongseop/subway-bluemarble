@@ -321,8 +321,21 @@ function Board({ session, onLeave }) {
   const canControl = session.role !== 'player';
   // 다른 탭을 보는 중에 처리할 카드가 생기면 게임 탭에 표시
   const myT = session.teamId && teams[session.teamId];
-  const needsAction = !!myT && !!(myT.pendingMission || myT.activeQuiz != null || myT.atShortcut
-    || myT.stealPending || myT.pickMode || myT.inJail);
+  const gameAction = !!myT && !!(myT.atShortcut || myT.inJail);
+  const missionAction = !!myT && !!(myT.pendingMission || myT.stealPending || myT.pickMode);
+  const quizAction = !!myT && myT.activeQuiz != null;
+  // 새 미션·퀴즈가 생기는 순간 해당 탭으로 자동 이동 (알림·본부 탭 보는 중이면 점만 표시)
+  const prevMission = useRef(missionAction);
+  const prevQuiz = useRef(quizAction);
+  useEffect(() => {
+    const onPlayTab = tab === 'game' || tab === 'mission' || tab === 'quiz';
+    if (missionAction && !prevMission.current && onPlayTab) setTab('mission');
+    else if (quizAction && !prevQuiz.current && onPlayTab) setTab('quiz');
+    prevMission.current = missionAction; prevQuiz.current = quizAction;
+  }, [missionAction, quizAction]);
+  useEffect(() => {
+    if ((tab === 'mission' && !missionAction) || (tab === 'quiz' && !quizAction)) setTab('game');
+  }, [tab, missionAction, quizAction]);
   useEffect(() => { if (tab === 'log' && logs[0]) setSeenLogId(logs[0].id); }, [logs, tab]);
   const myTeam = session.teamId && teams[session.teamId];
 
@@ -939,7 +952,9 @@ function Board({ session, onLeave }) {
       {/* 탭 바 — 순위·상태줄은 위에 고정, 아래 내용만 탭으로 전환 */}
       <View style={st.tabBar}>
         {[
-          myTeam && ['game', '🎯 게임', needsAction && tab !== 'game'],
+          myTeam && ['game', '🎯 게임', gameAction && tab !== 'game'],
+          missionAction && ['mission', '📋 미션', tab !== 'mission'],
+          quizAction && ['quiz', '❓ 퀴즈', tab !== 'quiz'],
           ['log', '💬 알림', !!logs[0] && logs[0].id !== seenLogId && tab !== 'log'],
           session.role === 'hq' && ['hq', '🏢 본부', false],
         ].filter(Boolean).map(([key, label, dot]) => (
@@ -1052,6 +1067,10 @@ function Board({ session, onLeave }) {
         );
       })()}
 
+      </>)}
+
+      {/* ── 📋 미션 탭 ── */}
+      {tab === 'mission' && (<>
       {/* 미션 고르기 / 죽은자의 소생 — 아이템 쓴 팀이 직접 선택 */}
       {myTeam?.pickMode && !myTeam?.pendingMission && !myTeam?.lastRoll && !myTeam?.atShortcut && (
         <View style={st.missionCard}>
@@ -1101,6 +1120,9 @@ function Board({ session, onLeave }) {
         </View>
       )}
 
+      </>)}
+
+      {tab === 'game' && (<>
       {/* 스태프 조작 */}
       {canControl && session.teamId && myTeam && (
         <View style={st.controls}>
@@ -1161,7 +1183,11 @@ function Board({ session, onLeave }) {
         </View>
       )}
 
-      {/* 코인 퀴즈 — 문제는 팀 전원에게 (그림 포함), 정답·판정은 스태프만 */}
+      </>)}
+
+      {/* ── ❓ 퀴즈 탭 ── 문제는 팀 전원에게 (그림 포함), 정답·판정·출제는 스태프만 */}
+      {tab === 'quiz' && (<>
+
       {myTeam?.activeQuiz != null && getQuiz(myTeam.activeQuiz) && (() => {
         const quiz = getQuiz(myTeam.activeQuiz);
         return (
@@ -1187,6 +1213,8 @@ function Board({ session, onLeave }) {
           </View>
         );
       })()}
+
+      </>)}
 
       {/* 상점 (카테고리별) — 팀이 직접 구매. 지도 위 모달로 띄움 (뒤로가기·바깥 탭으로 닫힘) */}
       <Modal visible={shopOpen && !!myTeam} transparent animationType="fade"
@@ -1224,8 +1252,6 @@ function Board({ session, onLeave }) {
         </View>
         </View>
       </Modal>
-
-      </>)}
 
       {/* 본부 패널 */}
       {tab === 'hq' && session.role === 'hq' && (
@@ -1437,7 +1463,7 @@ const st = StyleSheet.create({
   },
   tabBtn: { flex: 1, paddingVertical: 8, borderRadius: 8, alignItems: 'center' },
   tabBtnOn: { backgroundColor: C.green },
-  tabText: { color: C.subText, fontSize: 14, fontWeight: 'bold' },
+  tabText: { color: C.subText, fontSize: 13, fontWeight: 'bold' },
   tabTextOn: { color: '#fff' },
   modalBg: {
     flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', padding: 16,
