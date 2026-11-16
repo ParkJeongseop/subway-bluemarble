@@ -1159,15 +1159,17 @@ function Board({ session, onLeave }) {
       {/* 상점 (카테고리별) — 팀이 직접 구매. 지도 위 모달로 띄움 (뒤로가기·바깥 탭으로 닫힘) */}
       <Modal visible={shopOpen && !!myTeam} transparent animationType="fade"
         onRequestClose={() => setShopOpen(false)}>
-        <TouchableOpacity style={st.modalBg} activeOpacity={1} onPress={() => setShopOpen(false)}>
-        <TouchableOpacity style={st.modalCard} activeOpacity={1}>
+        {/* 배경 탭 영역은 카드와 형제로 둠 — 카드를 터치 컴포넌트로 감싸면 네이티브에서 ScrollView 드래그를 뺏김 */}
+        <View style={st.modalBg}>
+        <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={() => setShopOpen(false)} />
+        <View style={st.modalCard}>
           <View style={st.modalHeader}>
             <Text style={st.missionText}>🛒 상점 — 보유 🪙 {myTeam?.coins || 0}</Text>
             <TouchableOpacity style={st.ctrlBtn} onPress={() => setShopOpen(false)}>
               <Text style={st.btnText}>닫기 ✕</Text>
             </TouchableOpacity>
           </View>
-          <ScrollView>
+          <ScrollView style={{ flexShrink: 1 }}>
             {CATS.map((cat) => (
               <View key={cat.key}>
                 <Text style={st.shopCat}>{cat.label}</Text>
@@ -1187,8 +1189,8 @@ function Board({ session, onLeave }) {
               </View>
             ))}
           </ScrollView>
-        </TouchableOpacity>
-        </TouchableOpacity>
+        </View>
+        </View>
       </Modal>
 
       {/* 본부 패널 */}
