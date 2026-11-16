@@ -521,16 +521,25 @@ function Board({ session, onLeave }) {
   const takeShortcut = async (yes) => {
     const t = teams[session.teamId];
     if (!t || !t.atShortcut) return;
-    if (yes) {
-      await updateDoc(teamRef(), { atShortcut: false, onShortcut: true, shortcutPos: 0 });
-      await log('move', session.teamId,
-        `${t.name} 🚇 수인분당선 환승! 지름길 진입 (주사위로 선릉까지 이동)`);
-      sendPush(gameId, 'all', '🚇 지름길!', `${t.name}이 왕십리→선릉 지름길에 진입했습니다!`);
-    } else {
-      const mission = drawMission(t, STATIONS[WANGSIMNI].name);
-      await updateDoc(teamRef(), { atShortcut: false, pendingMission: mission });
-      await log('move', session.teamId, `${t.name} 지름길 포기 / 미션: ${mission}`);
+    // 지름길을 타든 안 타든 왕십리 도착 미션은 수행 (면제권·미션 고르기 규칙은 일반 역과 동일)
+    const update = yes
+      ? { atShortcut: false, onShortcut: true, shortcutPos: 0 }
+      : { atShortcut: false };
+    let msg = yes
+      ? `${t.name} 🚇 수인분당선 환승! 지름길 진입 (주사위로 선릉까지 이동)`
+      : `${t.name} 지름길 포기`;
+    let mission = null;
+    if (t.skipNextMission) { update.skipNextMission = false; msg += ' — 미션 면제 🎫'; }
+    else if (t.pickMode) msg += ' — 미션 고르는 중 🤔';
+    else {
+      mission = drawMission(t, STATIONS[WANGSIMNI].name);
+      update.pendingMission = mission;
+      if (mission) msg += ` / 왕십리 미션: ${mission}`;
     }
+    await updateDoc(teamRef(), update);
+    await log('move', session.teamId, msg);
+    if (yes) sendPush(gameId, 'all', '🚇 지름길!', `${t.name}이 왕십리→선릉 지름길에 진입했습니다!`);
+    if (mission) sendPush(gameId, session.teamId, '📋 왕십리 미션', mission);
   };
 
   // 감옥 석방 조건: 다른 모든 팀이 감옥行 이후 미션 1회 이상 성공
@@ -949,8 +958,8 @@ function Board({ session, onLeave }) {
           {(myTeam.items || []).map((id, i) => (
             <TouchableOpacity
               key={`${id}-${i}`} style={st.invChip}
-              // 상대 팀을 건드리는 아이템(공격·자석)은 스태프 전용
-              disabled={!canControl && (!!itemById(id)?.target || id === 'magnet')}
+              // 대상 지정 공격 아이템은 스태프 전용 (자석은 참가자도 사용 — 보안 규칙에서 위치 당기기만 허용)
+              disabled={!canControl && !!itemById(id)?.target}
               onPress={() => {
                 const item = itemById(id);
                 if (id === 'pickDice') setPendingPick(true);
@@ -1009,14 +1018,14 @@ function Board({ session, onLeave }) {
         <View style={st.missionCard}>
           <Text style={st.missionLabel}>🚇 왕십리 — 수인분당선 지름길</Text>
           <Text style={st.missionText}>
-            수인분당선으로 환승! 지름길에서도 주사위로 이동 (5칸, 경유역마다 도착 미션)
+            수인분당선으로 환승! 지름길에서도 주사위로 이동 (5칸, 경유역마다 도착 미션). 어느 쪽을 골라도 왕십리 미션은 수행해요.
           </Text>
           <View style={st.row}>
             <TouchableOpacity style={[st.ctrlBtn, st.ok]} onPress={() => takeShortcut(true)}>
               <Text style={st.btnText}>🚇 지름길 타기</Text>
             </TouchableOpacity>
             <TouchableOpacity style={st.ctrlBtn} onPress={() => takeShortcut(false)}>
-              <Text style={st.btnText}>그냥 진행 (미션)</Text>
+              <Text style={st.btnText}>그냥 진행 (2호선)</Text>
             </TouchableOpacity>
           </View>
         </View>
