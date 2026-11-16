@@ -266,6 +266,9 @@ function Board({ session, onLeave }) {
   const [teams, setTeams] = useState({});
   const [logs, setLogs] = useState([]);
   const [shopOpen, setShopOpen] = useState(false);
+  // 지도 아래 탭: game(조작·카드) / log(알림) / hq(본부 패널)
+  const [tab, setTab] = useState(session.role === 'hq' ? 'hq' : 'game');
+  const [seenLogId, setSeenLogId] = useState(null); // 알림 탭에서 마지막으로 본 로그
   const [pendingUse, setPendingUse] = useState(null); // 대상팀 선택 대기 중인 아이템 id
   const [pendingPick, setPendingPick] = useState(false); // 지정 주사위 숫자 선택 중
   const [hqMsg, setHqMsg] = useState('');
@@ -316,6 +319,11 @@ function Board({ session, onLeave }) {
   }, []);
 
   const canControl = session.role !== 'player';
+  // 다른 탭을 보는 중에 처리할 카드가 생기면 게임 탭에 표시
+  const myT = session.teamId && teams[session.teamId];
+  const needsAction = !!myT && !!(myT.pendingMission || myT.activeQuiz != null || myT.atShortcut
+    || myT.stealPending || myT.pickMode || myT.inJail);
+  useEffect(() => { if (tab === 'log' && logs[0]) setSeenLogId(logs[0].id); }, [logs, tab]);
   const myTeam = session.teamId && teams[session.teamId];
 
   // 주사위 연출: lastRoll이 새로 생기면 낱개 눈이 각각 돌아가다 결과에 멈춤 (참가자 화면도 동일 재생)
@@ -882,7 +890,6 @@ function Board({ session, onLeave }) {
       <View style={{ flex: 1, flexDirection: isWide ? 'row' : 'column' }}>
       {isWide && <View style={st.sideBoard}>{boardView}</View>}
       <View style={{ flex: 1 }}>
-      <ScrollView style={{ flex: 1 }} keyboardShouldPersistTaps="handled">
 
       {/* 골인 순위 (전원) */}
       {ranking.length > 0 && (
@@ -920,6 +927,22 @@ function Board({ session, onLeave }) {
         </View>
       )}
 
+      {/* 탭 바 — 순위·상태줄은 위에 고정, 아래 내용만 탭으로 전환 */}
+      <View style={st.tabBar}>
+        {[
+          myTeam && ['game', '🎯 게임', needsAction && tab !== 'game'],
+          ['log', '💬 알림', !!logs[0] && logs[0].id !== seenLogId && tab !== 'log'],
+          session.role === 'hq' && ['hq', '🏢 본부', false],
+        ].filter(Boolean).map(([key, label, dot]) => (
+          <TouchableOpacity key={key} style={[st.tabBtn, tab === key && st.tabBtnOn]}
+            onPress={() => { setTab(key); if (key === 'log') setSeenLogId(logs[0]?.id ?? null); }}>
+            <Text style={[st.tabText, tab === key && st.tabTextOn]}>{label}{dot ? ' 🔴' : ''}</Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+
+      <ScrollView style={{ flex: 1 }} keyboardShouldPersistTaps="handled">
+      {tab === 'game' && (<>
       {/* 인벤토리 (스태프는 탭해서 사용) */}
       {myTeam && (myTeam.items || []).length > 0 && (
         <View style={st.invRow}>
@@ -1193,8 +1216,10 @@ function Board({ session, onLeave }) {
         </View>
       </Modal>
 
+      </>)}
+
       {/* 본부 패널 */}
-      {session.role === 'hq' && (
+      {tab === 'hq' && session.role === 'hq' && (
         <View style={st.missionCard}>
           <Text style={st.missionLabel}>
             방 코드 <Text style={st.keyText}>{gameId}</Text>
@@ -1240,8 +1265,8 @@ function Board({ session, onLeave }) {
         </View>
       )}
 
-      {/* 실시간 알림 — 버튼·카드와 같은 스크롤 안에 이어서 표시 */}
-      <View style={st.log}>
+      {/* 실시간 알림 */}
+      {tab === 'log' && <View style={st.log}>
         {logs.map((item) => (
           <Text key={item.id} style={[st.logLine, item.type === 'broadcast' && st.broadcastLine]}>
             <Text style={{ color: TEAM_COLORS[item.teamId] || '#aaa' }}>
@@ -1249,7 +1274,7 @@ function Board({ session, onLeave }) {
             {item.message}
           </Text>
         ))}
-      </View>
+      </View>}
       </ScrollView>
       </View>
       </View>
@@ -1397,6 +1422,14 @@ const st = StyleSheet.create({
     flexDirection: 'row', gap: 16, alignItems: 'center',
     paddingHorizontal: 16, paddingTop: 4,
   },
+  tabBar: {
+    flexDirection: 'row', marginHorizontal: 12, marginTop: 6, marginBottom: 2,
+    backgroundColor: C.panel, borderRadius: 10, padding: 3,
+  },
+  tabBtn: { flex: 1, paddingVertical: 8, borderRadius: 8, alignItems: 'center' },
+  tabBtnOn: { backgroundColor: C.green },
+  tabText: { color: C.subText, fontSize: 14, fontWeight: 'bold' },
+  tabTextOn: { color: '#fff' },
   modalBg: {
     flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', padding: 16,
   },
